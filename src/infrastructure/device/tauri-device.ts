@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   deviceErrorSchema,
   discoverySchema,
+  fileIdSchema,
   scopeIdSchema,
   selectionSchema,
 } from "../../features/discovery/application/contracts";
@@ -49,6 +50,42 @@ export const tauriDevice: DeviceAdapter = {
       return response.success
         ? { ok: true, value: response.data }
         : { ok: false, error: "transportError" };
+    } catch (error) {
+      return { ok: false, error: normalizeError(error) };
+    } finally {
+      signal.removeEventListener("abort", cancel);
+    }
+  },
+
+  async readFile(scopeId, fileId, mode, maxBytes, signal) {
+    if (signal.aborted) return { ok: false, error: "cancelled" };
+    if (activeScope?.scopeId !== scopeId)
+      return { ok: false, error: "scopeInactive" };
+    if (
+      !fileIdSchema.safeParse(fileId).success ||
+      !Number.isSafeInteger(maxBytes) ||
+      maxBytes < 1 ||
+      maxBytes > 8 * 1024 * 1024
+    ) {
+      return { ok: false, error: "invalidRequest" };
+    }
+    const operation = { scopeId, requestId: ++activeScope.requestId };
+    const cancel = () => {
+      void invoke("cancel_device_operation", { request: operation }).catch(
+        () => undefined,
+      );
+    };
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      const bytes = await invoke("read_device_file", {
+        request: { ...operation, fileId, mode, maxBytes },
+      });
+      const limit = mode === "imagePreview" ? 2 * 1024 * 1024 : maxBytes;
+      return !signal.aborted &&
+        bytes instanceof ArrayBuffer &&
+        bytes.byteLength <= limit
+        ? { ok: true, value: new Uint8Array(bytes) }
+        : { ok: false, error: signal.aborted ? "cancelled" : "transportError" };
     } catch (error) {
       return { ok: false, error: normalizeError(error) };
     } finally {

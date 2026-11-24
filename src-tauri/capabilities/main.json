@@ -6,6 +6,7 @@
     "allow-select-device-scope",
     "allow-clear-device-scope",
     "allow-discover-device-files",
-    "allow-cancel-device-operation"
+    "allow-cancel-device-operation",
+    "allow-read-device-file"
   ]
 }

@@ -50,6 +50,7 @@ pub struct Discovery {
     unavailable: usize,
 }
 
+#[derive(Clone)]
 pub(super) struct Resource {
     pub id: Uuid,
     pub name: OsString,
@@ -57,7 +58,7 @@ pub(super) struct Resource {
 }
 
 impl Discovery {
-    pub(super) fn cancelled() -> Self {
+    pub fn cancelled() -> Self {
         Self {
             status: ScanStatus::Cancelled,
             files: Vec::new(),

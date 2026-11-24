@@ -138,6 +138,64 @@ impl Root {
     }
 }
 
+impl Root {
+    pub(super) fn open_file(
+        &self,
+        resource: &super::discovery::Resource,
+    ) -> Result<(std::fs::File, u64), DeviceError> {
+        let before = fs::statat(&self._fd, &resource.name, fs::AtFlags::SYMLINK_NOFOLLOW).map_err(
+            |error| {
+                if error == Errno::NOENT {
+                    DeviceError::ResourceChanged
+                } else {
+                    io_error(error)
+                }
+            },
+        )?;
+        Self::require_file(&before, resource)?;
+        let fd = fs::openat(
+            &self._fd,
+            &resource.name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC | OFlags::NOCTTY,
+            Mode::empty(),
+        )
+        .map_err(|error| {
+            if error == Errno::NOENT || error == Errno::LOOP {
+                DeviceError::ResourceChanged
+            } else {
+                io_error(error)
+            }
+        })?;
+        let file = std::fs::File::from(fd);
+        let length = self.verify_file(&file, resource)?;
+        Ok((file, length))
+    }
+
+    fn require_file(
+        stat: &fs::Stat,
+        resource: &super::discovery::Resource,
+    ) -> Result<u64, DeviceError> {
+        if fs::FileType::from_raw_mode(stat.st_mode) != fs::FileType::RegularFile
+            || stat.st_nlink != 1
+            || stat.st_flags & 0x4000_0000 != 0
+            || identity(stat) != resource.identity
+        {
+            return Err(DeviceError::ResourceChanged);
+        }
+        stat.st_size
+            .try_into()
+            .map_err(|_| DeviceError::UnsupportedResource)
+    }
+
+    pub(super) fn verify_file(
+        &self,
+        file: &std::fs::File,
+        resource: &super::discovery::Resource,
+    ) -> Result<u64, DeviceError> {
+        Self::require_file(&fs::fstat(file).map_err(io_error)?, resource)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

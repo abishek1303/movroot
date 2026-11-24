@@ -288,6 +288,77 @@ impl Root {
     }
 }
 
+fn query<T: Default>(
+    handle: HANDLE,
+    class: fs::FILE_INFO_BY_HANDLE_CLASS,
+) -> Result<T, DeviceError> {
+    let mut info = T::default();
+    // Callers pair the information class with its fixed Win32 output structure.
+    let ok = unsafe {
+        fs::GetFileInformationByHandleEx(
+            handle,
+            class,
+            (&mut info as *mut T).cast(),
+            size_of::<T>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(io_error(io::Error::last_os_error()));
+    }
+    Ok(info)
+}
+
+impl Root {
+    pub(super) fn open_file(
+        &self,
+        resource: &super::discovery::Resource,
+    ) -> Result<(std::fs::File, u64), DeviceError> {
+        let handle = open_component(
+            &self._handle,
+            &resource.name,
+            fs::FILE_READ_ATTRIBUTES | fs::FILE_READ_DATA,
+        )?;
+        let file = std::fs::File::from(handle);
+        let length = self.verify_file(&file, resource)?;
+        Ok((file, length))
+    }
+
+    pub(super) fn verify_file(
+        &self,
+        file: &std::fs::File,
+        resource: &super::discovery::Resource,
+    ) -> Result<u64, DeviceError> {
+        let handle = file.as_raw_handle();
+        // The File owns the live handle until this method returns.
+        if unsafe { fs::GetFileType(handle) } != fs::FILE_TYPE_DISK {
+            return Err(DeviceError::UnsupportedResource);
+        }
+        let tag: fs::FILE_ATTRIBUTE_TAG_INFO = query(handle, fs::FileAttributeTagInfo)?;
+        let id: fs::FILE_ID_INFO = query(handle, fs::FileIdInfo)?;
+        let root_id: fs::FILE_ID_INFO = query(self._handle.as_raw_handle(), fs::FileIdInfo)?;
+        let basic: fs::FILE_BASIC_INFO = query(handle, fs::FileBasicInfo)?;
+        let standard: fs::FILE_STANDARD_INFO = query(handle, fs::FileStandardInfo)?;
+        if tag.FileAttributes & (REJECTED_ATTRIBUTES | fs::FILE_ATTRIBUTE_DIRECTORY) != 0
+            || standard.NumberOfLinks != 1
+            || standard.DeletePending
+            || standard.Directory
+            || id.VolumeSerialNumber != root_id.VolumeSerialNumber
+            || (
+                id.FileId.Identifier,
+                basic.ChangeTime,
+                basic.LastWriteTime,
+                standard.EndOfFile,
+            ) != resource.identity
+        {
+            return Err(DeviceError::ResourceChanged);
+        }
+        standard
+            .EndOfFile
+            .try_into()
+            .map_err(|_| DeviceError::UnsupportedResource)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

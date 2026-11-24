@@ -23,7 +23,8 @@ pub fn run() {
             commands::device::select_device_scope,
             commands::device::clear_device_scope,
             commands::device::discover_device_files,
-            commands::device::cancel_device_operation
+            commands::device::cancel_device_operation,
+            commands::device::read_device_file
         ])
         .setup(|app| {
             let config = app.config();

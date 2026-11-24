@@ -5,6 +5,10 @@ use std::sync::{
 };
 
 mod discovery;
+mod preview;
+mod read;
+pub use read::ReadMode;
+pub const MAX_READ_BYTES: usize = read::MAX_BYTES;
 pub use discovery::Discovery;
 use discovery::Resource;
 #[cfg(target_os = "macos")]
@@ -39,6 +43,12 @@ impl Root {
     ) -> Result<(), DeviceError> {
         Err(DeviceError::UnsupportedResource)
     }
+    fn open_file(&self, _: &Resource) -> Result<(std::fs::File, u64), DeviceError> {
+        Err(DeviceError::UnsupportedResource)
+    }
+    fn verify_file(&self, _: &std::fs::File, _: &Resource) -> Result<u64, DeviceError> {
+        Err(DeviceError::UnsupportedResource)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -51,6 +61,10 @@ pub enum DeviceError {
     Busy,
     Cancelled,
     Unavailable,
+    UnknownFile,
+    ResourceChanged,
+    LimitExceeded,
+    DecodeFailed,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -58,7 +72,7 @@ pub enum DeviceError {
 pub struct Scope {
     scope_id: Uuid,
     label: String,
-    capabilities: [&'static str; 1],
+    capabilities: [&'static str; 2],
 }
 
 #[derive(Serialize)]
@@ -76,10 +90,17 @@ struct Grant {
     cancelled_next: bool,
 }
 
+#[derive(Clone)]
 struct Operation {
     scope: Uuid,
     request: u32,
     cancelled: Arc<AtomicBool>,
+}
+
+pub struct Work {
+    operation: Operation,
+    root: Arc<Root>,
+    resource: Option<Resource>,
 }
 
 fn parse_scope(id: &str) -> Result<Uuid, DeviceError> {
@@ -174,7 +195,7 @@ impl DeviceState {
             let scope = Scope {
                 scope_id: Uuid::new_v4(),
                 label,
-                capabilities: ["discover"],
+                capabilities: ["discover", "read"],
             };
             Ok::<_, DeviceError>((scope, root))
         });
@@ -242,53 +263,116 @@ impl DeviceState {
         Ok(())
     }
 
-    pub fn discover(&self, scope: &str, request: u32) -> Result<Discovery, DeviceError> {
+    pub fn start(
+        &self,
+        scope: &str,
+        request: u32,
+        file: Option<&str>,
+    ) -> Result<Option<Work>, DeviceError> {
         let scope = parse_scope(scope)?;
-        let (root, cancel) = {
-            let mut session = self.0.lock().unwrap();
-            let busy = session.operation.is_some();
-            let grant = session
-                .active
-                .as_mut()
-                .filter(|grant| grant.scope.scope_id == scope)
-                .ok_or(DeviceError::ScopeInactive)?;
-            if grant.last_request.checked_add(1) != Some(request) {
-                return Err(DeviceError::InvalidRequest);
-            }
-            grant.last_request = request;
-            if std::mem::take(&mut grant.cancelled_next) {
-                return Ok(Discovery::cancelled());
-            }
-            if busy {
-                return Err(DeviceError::Busy);
-            }
-            let root = Arc::clone(&grant.root);
-            let cancelled = Arc::new(AtomicBool::new(false));
-            session.operation = Some(Operation {
-                scope,
-                request,
-                cancelled: Arc::clone(&cancelled),
-            });
-            (root, cancelled)
+        let mut session = self.0.lock().unwrap();
+        let busy = session.operation.is_some();
+        let grant = session
+            .active
+            .as_mut()
+            .filter(|grant| grant.scope.scope_id == scope)
+            .ok_or(DeviceError::ScopeInactive)?;
+        if grant.last_request.checked_add(1) != Some(request) {
+            return Err(DeviceError::InvalidRequest);
+        }
+        grant.last_request = request;
+        if std::mem::take(&mut grant.cancelled_next) {
+            return Ok(None);
+        }
+        if busy {
+            return Err(DeviceError::Busy);
+        }
+        let resource = file
+            .map(|file| {
+                let id = parse_scope(file)?;
+                grant
+                    .resources
+                    .iter()
+                    .find(|item| item.id == id)
+                    .cloned()
+                    .ok_or(DeviceError::UnknownFile)
+            })
+            .transpose()?;
+        let root = Arc::clone(&grant.root);
+        let operation = Operation {
+            scope,
+            request,
+            cancelled: Arc::new(AtomicBool::new(false)),
         };
-        // Always release admission, including after an unexpected unwinding worker.
-        let scanned = std::panic::catch_unwind(|| discovery::scan(&root, &cancel))
-            .unwrap_or(Err(DeviceError::Unavailable));
+        session.operation = Some(operation.clone());
+        Ok(Some(Work {
+            operation,
+            root,
+            resource,
+        }))
+    }
+
+    pub fn run_discovery(&self, work: Work) -> Result<Discovery, DeviceError> {
+        let scanned =
+            std::panic::catch_unwind(|| discovery::scan(&work.root, &work.operation.cancelled))
+                .unwrap_or(Err(DeviceError::Unavailable));
         let mut session = self.0.lock().unwrap();
         session.operation = None;
         let Some(grant) = session
             .active
             .as_mut()
-            .filter(|grant| grant.scope.scope_id == scope)
+            .filter(|grant| grant.scope.scope_id == work.operation.scope)
         else {
             return Ok(Discovery::cancelled());
         };
-        if cancel.load(Ordering::Acquire) {
+        if work.operation.cancelled.load(Ordering::Acquire) {
             return Ok(Discovery::cancelled());
         }
         let (result, resources) = scanned?;
         grant.resources = resources;
         Ok(result)
+    }
+
+    pub fn run_read(
+        &self,
+        work: Work,
+        limit: usize,
+        mode: ReadMode,
+    ) -> Result<Vec<u8>, DeviceError> {
+        let result = std::panic::catch_unwind(|| {
+            let resource = work.resource.as_ref().ok_or(DeviceError::UnknownFile)?;
+            let start = std::time::Instant::now();
+            let bytes = read::read(
+                &work.root,
+                resource,
+                limit,
+                &work.operation.cancelled,
+                start,
+            )?;
+            match mode {
+                ReadMode::Content => Ok(bytes),
+                ReadMode::ImagePreview => {
+                    preview::thumbnail(&bytes, &work.operation.cancelled, start)
+                }
+            }
+        })
+        .unwrap_or(Err(DeviceError::Unavailable));
+        let mut session = self.0.lock().unwrap();
+        session.operation = None;
+        if session.active.as_ref().map(|grant| grant.scope.scope_id) != Some(work.operation.scope)
+            || work.operation.cancelled.load(Ordering::Acquire)
+        {
+            return Err(DeviceError::Cancelled);
+        }
+        result
+    }
+
+    #[cfg(test)]
+    fn discover(&self, scope: &str, request: u32) -> Result<Discovery, DeviceError> {
+        self.start(scope, request, None)?.map_or_else(
+            || Ok(Discovery::cancelled()),
+            |work| self.run_discovery(work),
+        )
     }
 }
 
@@ -418,6 +502,65 @@ mod tests {
         state.clear(&key).unwrap();
         assert!(matches!(
             state.discover(&key, 5),
+            Err(DeviceError::ScopeInactive)
+        ));
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn read_rejects_stale_replaced_and_multiply_linked_files() {
+        #[cfg(target_os = "macos")]
+        let temp = std::path::PathBuf::from("/private/tmp");
+        #[cfg(windows)]
+        let temp = std::env::temp_dir();
+        let path = temp.join(format!("movroot-read-{}", Uuid::new_v4()));
+        std::fs::create_dir(&path).unwrap();
+        let file = path.join("fixture.bin");
+        std::fs::write(&file, [0, 255, 17, 128]).unwrap();
+        let state = DeviceState::default();
+        state.page_ready();
+        let ticket = state.begin_picker().unwrap();
+        let Selection::Selected { scope } =
+            state.finish_picker(ticket, Some(path.clone())).unwrap()
+        else {
+            panic!("expected scope")
+        };
+        let key = scope.scope_id.to_string();
+        let listing = serde_json::to_value(state.discover(&key, 1).unwrap()).unwrap();
+        let id = listing["files"][0]["fileId"].as_str().unwrap();
+        let work = state.start(&key, 2, Some(id)).unwrap().unwrap();
+        assert_eq!(
+            state.run_read(work, 4, ReadMode::Content).unwrap(),
+            [0, 255, 17, 128]
+        );
+        let work = state.start(&key, 3, Some(id)).unwrap().unwrap();
+        assert_eq!(
+            state.run_read(work, 3, ReadMode::Content),
+            Err(DeviceError::LimitExceeded)
+        );
+        let work = state.start(&key, 4, Some(id)).unwrap().unwrap();
+        std::fs::hard_link(&file, path.join("second-link")).unwrap();
+        assert_eq!(
+            state.run_read(work, 4, ReadMode::Content),
+            Err(DeviceError::ResourceChanged)
+        );
+        std::fs::remove_file(path.join("second-link")).unwrap();
+        std::fs::rename(&file, path.join("retained")).unwrap();
+        std::fs::write(&file, [1, 2, 3, 4]).unwrap();
+        let work = state.start(&key, 5, Some(id)).unwrap().unwrap();
+        assert_eq!(
+            state.run_read(work, 4, ReadMode::Content),
+            Err(DeviceError::ResourceChanged)
+        );
+        state.discover(&key, 6).unwrap();
+        assert!(matches!(
+            state.start(&key, 7, Some(id)),
+            Err(DeviceError::UnknownFile)
+        ));
+        state.clear(&key).unwrap();
+        assert!(matches!(
+            state.start(&key, 8, Some(id)),
             Err(DeviceError::ScopeInactive)
         ));
         std::fs::remove_dir_all(path).unwrap();

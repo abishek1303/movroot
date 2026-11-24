@@ -19,6 +19,10 @@ export const deviceErrorSchema = z.enum([
   "cancelled",
   "unavailable",
   "transportError",
+  "unknownFile",
+  "limitExceeded",
+  "resourceChanged",
+  "decodeFailed",
 ]);
 
 export type ScopeId = z.infer<typeof scopeIdSchema>;
@@ -46,3 +50,6 @@ export const discoverySchema = z.strictObject({
 });
 
 export type Discovery = z.infer<typeof discoverySchema>;
+
+export type FileId = z.infer<typeof fileIdSchema>;
+export type ReadMode = "content" | "imagePreview";

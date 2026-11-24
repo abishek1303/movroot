@@ -23,7 +23,7 @@ ESLint restricts static imports from portable code into React, Node, Tauri, comp
 
 The webview and TypeScript request work. User approval expresses intent and Zod validates data shape. Rust independently authorizes operations using OS permissions, native grants, and current resource state. Provider responses and file contents are untrusted data.
 
-- The local main capability grants only the scope selection and clear commands. The native dialog Rust plugin is registered without any frontend dialog grant. Its transitive filesystem plugin is not registered. The production CSP permits bundled content and the Tauri IPC transport only, and forbids frames and objects. Development uses a separate policy for loopback Vite and HMR. The native window enforces the configured origin and denies new windows.
+- The local main capability grants only scope selection, clear, discovery, operation cancellation, and bounded file reads. The native dialog Rust plugin is registered without any frontend dialog grant. Its transitive filesystem plugin is not registered. The production CSP permits bundled content and the Tauri IPC transport only, and forbids frames and objects. Development uses a separate policy for loopback Vite and HMR. The native window enforces the configured origin and denies new windows.
 - Future native grants must constrain the resource and operation. Reject traversal, out-of-scope symlinks and reparse points, and stale grants. Recheck identity and expected state at execution time, including after approval. Default to no overwrite and honor destination filesystem rules.
 - Bound file reading, decompression, and parsing. Keep prompt injection and untrusted structured output away from command execution and authority decisions. Require informed consent and minimize data sent externally. Keep credentials and raw content out of logs.
 - Before adding filesystem mutation, implement durable operation intent and outcomes, source and destination checks, and reconciliation after interruption. A database transaction cannot make a filesystem operation atomic. Verify destinations before deleting sources in cross-volume workflows.
@@ -34,7 +34,7 @@ Device adapters use opaque IDs, normalized metadata, and explicit per-item capab
 
 Muse Ember is the intended first AI provider. A provider adapter constructs payloads, validates structured output using Zod, normalizes errors, and exposes reported usage. Native transport owns endpoint and redirect policies, credentials, cancellation, timeouts, and size limits. Installed credentials belong in OS secure storage. Use ignored local environment files for future native development credentials. Keep credentials out of frontend variables and distributed binaries.
 
-SQLite is planned for settings, metadata, analysis, proposals, history, and undo or recovery state. Select bindings and schema with the first durable use case. File discovery and reading are later M1 stages. Mutation, AI, persistence, authentication, mobile integration, background agents, and updates are outside M1.
+SQLite is planned for settings, metadata, analysis, proposals, history, and undo or recovery state. Select bindings and schema with the first durable use case. File discovery and reading are implemented in M1. Mutation, AI, persistence, authentication, mobile integration, background agents, and updates are outside M1.
 
 ## Development and verification
 
@@ -72,7 +72,7 @@ The pinned direct dependencies are in `package.json` and `src-tauri/Cargo.toml`.
 
 ## M1.1 device access checkpoint
 
-The main webview can invoke `select_device_scope({ request: {} })` and `clear_device_scope({ request: { scopeId } })`. The native picker is parented to the requesting window. Rust accepts the picker result, validates the root, and publishes an opaque UUID with a display label and an empty operation-capability list. The adapter validates the result with Zod and normalizes errors. It keeps native paths and handles outside the renderer contract.
+The main webview can invoke `select_device_scope({ request: {} })` and `clear_device_scope({ request: { scopeId } })`. At the M1.1 checkpoint, the native picker is parented to the requesting window. Rust accepts the picker result, validates the root, and publishes an opaque UUID with a display label and an empty operation-capability list. The adapter validates the result with Zod and normalizes errors. It keeps native paths and handles outside the renderer contract.
 
 Rust holds one active grant and one pending picker ticket per main webview session. Selection cancellation keeps the existing grant. Successful replacement revokes the old ID. Clear requires the expected ID and invalidates in-flight replacement. Native navigation and page-start events revoke the grant and disable admission until the page finishes loading. A late picker completion cannot restore a revoked scope. The native worker opens the folder outside the state lock, and a worker join failure releases its picker ticket. The grant is in-memory and the owned handle closes on revocation or exit.
 
@@ -80,10 +80,18 @@ The macOS implementation opens directory components relative to descriptor handl
 
 M1.1 adds the Tauri JavaScript invoke API, the Rust dialog plugin, Serde and UUID for narrow contracts and identifiers, rustix for macOS descriptor-relative calls, and windows-sys for the Windows handle APIs. The macOS unit tests cover grant replacement, clear during a pending picker, reload, cancellation, replay, and handle-relative lookup and replacement. The packaged macOS app selected and cleared a synthetic scope, and the development webview exercised native picker cancellation. TypeScript adapter tests cover cancellation, response shape and error normalization. The Windows FFI module and native probe tests type-checked for x64 MSVC in isolation. Running those tests requires Windows. The full app cross-check on macOS stopped at the Windows resource compiler.
 
-The M1.1 Windows filesystem gate passed on the Windows x64 runner, including native enumeration, relative opens, directory replacement and file replacement, junction and out-of-scope rejection, handle cleanup, and the complete Tauri build. M1.2 adds bounded immediate-directory discovery. M1.3 content, binary IPC, and previews are pending discovery verification. Interactive Windows verification and behavioral denial checks for unauthorized invokes and popups remain open.
+The M1.1 Windows filesystem gate passed on the Windows x64 runner, including native enumeration, relative opens, directory replacement and file replacement, junction and out-of-scope rejection, handle cleanup, and the complete Tauri build. M1.2 adds bounded immediate-directory discovery. Both M1.2 CI jobs passed. The packaged macOS app listed a synthetic fixture. Interactive Windows verification and behavioral denial checks for unauthorized invokes and popups remain open.
 
 ## M1.2 discovery
 
 `discover_device_files` lists eligible immediate regular files through the pinned root handle. `cancel_device_operation` addresses the live operation or the next sequential request on the active scope. The native session retains one worker, one bounded listing and one bit for cancellation arriving before admission. Scope replacement and revocation invalidate the IDs and signal the worker. The two-second deadline is cooperative.
 
 Each scan examines at most 2,000 entries, returns at most 500 files, and caps the serialized response at 512 KiB. Listing IDs are regenerated on successful refresh. Metadata supplies names, optional extensions and sizes. Missing fields remain optional. Results distinguish complete, partial, truncated and cancelled scans. The React screen requests discovery explicitly and drops stale responses. No scan reads file content.
+
+## M1.3 bounded reads and previews
+
+`read_device_file` accepts a scope ID, listing file ID, sequential request ID, mode and byte cap. It admits at most one worker before scheduling blocking I/O, shares cancellation with discovery, and rejects stale resources. The native read is bound to the authorized directory handle and verifies file identity and metadata before and after reading. It rejects links, non-regular files, multiply linked files and changed resources. These checks detect ordinary replacement and concurrent modifications. They are not snapshot semantics. The three-second budget is cooperative and cannot force an OS call or decoder to return.
+
+The native input cap is 8 MiB. Explicit preview requests accept PNG and JPEG signatures, limit dimensions to 4,096 pixels per axis and 8 megapixels, and use a best-effort 64 MiB decoder budget. Rust returns an encoded PNG thumbnail of at most 512 pixels per side and 2 MiB. The renderer displays a Blob URL scoped by `img-src` and revokes it on replacement, refresh, clear or unmount. No original image is rendered directly, and preview work starts only on request.
+
+The Tauri binary response is validated as an ArrayBuffer before the adapter yields portable bytes. A temporary packaged WKWebView experiment returned the exact four synthetic bytes and a structured limit error with a three-byte cap. Array-shaped responses are rejected, including the Tauri JSON fallback. No fallback is configured. Windows WebView2 and Windows installation are unverified pending an interactive Windows host.

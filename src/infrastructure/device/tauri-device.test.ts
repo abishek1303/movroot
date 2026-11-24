@@ -1,6 +1,9 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { scopeIdSchema } from "../../features/discovery/application/contracts";
+import {
+  fileIdSchema,
+  scopeIdSchema,
+} from "../../features/discovery/application/contracts";
 import { tauriDevice } from "./tauri-device";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -44,5 +47,36 @@ test("keeps cancellation distinct from a failed selection", async () => {
   expect(await tauriDevice.selectScope()).toEqual({
     ok: true,
     value: { status: "cancelled" },
+  });
+});
+
+test("accepts bounded binary IPC and rejects a JSON array fallback", async () => {
+  mockInvoke.mockResolvedValueOnce({
+    status: "selected",
+    scope: { scopeId, label: "Synthetic", capabilities: ["discover", "read"] },
+  });
+  await tauriDevice.selectScope();
+  const fileId = fileIdSchema.parse("synthetic-file");
+  const signal = new AbortController().signal;
+  mockInvoke.mockResolvedValueOnce(Uint8Array.of(0, 255, 17, 128).buffer);
+  expect(
+    await tauriDevice.readFile(scopeId, fileId, "content", 4, signal),
+  ).toEqual({
+    ok: true,
+    value: Uint8Array.of(0, 255, 17, 128),
+  });
+  mockInvoke.mockResolvedValueOnce([0, 255, 17, 128]);
+  expect(
+    await tauriDevice.readFile(scopeId, fileId, "content", 4, signal),
+  ).toEqual({
+    ok: false,
+    error: "transportError",
+  });
+  mockInvoke.mockResolvedValueOnce(Uint8Array.of(0, 255, 17, 128, 0).buffer);
+  expect(
+    await tauriDevice.readFile(scopeId, fileId, "content", 4, signal),
+  ).toEqual({
+    ok: false,
+    error: "transportError",
   });
 });

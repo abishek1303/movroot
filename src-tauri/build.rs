@@ -5,6 +5,7 @@ fn main() {
             "clear_device_scope",
             "discover_device_files",
             "cancel_device_operation",
+            "read_device_file",
         ]),
     ))
     .expect("could not build Movroot permissions");
