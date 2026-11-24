@@ -95,3 +95,9 @@ Each scan examines at most 2,000 entries, returns at most 500 files, and caps th
 The native input cap is 8 MiB. Explicit preview requests accept PNG and JPEG signatures, limit dimensions to 4,096 pixels per axis and 8 megapixels, and use a best-effort 64 MiB decoder budget. Rust returns an encoded PNG thumbnail of at most 512 pixels per side and 2 MiB. The renderer displays a Blob URL scoped by `img-src` and revokes it on replacement, refresh, clear or unmount. No original image is rendered directly, and preview work starts only on request.
 
 The Tauri binary response is validated as an ArrayBuffer before the adapter yields portable bytes. A temporary packaged WKWebView experiment returned the exact four synthetic bytes and a structured limit error with a three-byte cap. Array-shaped responses are rejected, including the Tauri JSON fallback. No fallback is configured. Windows WebView2 and Windows installation are unverified pending an interactive Windows host.
+
+### M1 verification
+
+The implementation at `0d464c96ebfd78e5eccc3344069ba0c9fb4e7053` passed [macOS ARM64 and Windows x64 CI](https://github.com/abishek1303/movroot/actions/runs/45427726548). The Windows filesystem gate executed and passed on Windows. Both jobs passed the full Rust suite and native Tauri compilation. The local macOS suite passed five TypeScript tests and ten Rust tests.
+
+The macOS development webview rendered a generated PNG thumbnail and rejected an unsupported file with a PNG extension. The Apple Silicon DMG passed its integrity check. The app was copied from the mounted image, the image was ejected, and the copied ARM64 app launched with Vite stopped. Its packaged webview discovered the synthetic fixture, rendered a thumbnail generated from JPEG, and removed the preview on clear. The exact-byte IPC probe was run separately in a temporary packaged build. Windows interactive picker, WebView2 byte representation, installer and launch checks remain pending.
