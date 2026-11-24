@@ -1,0 +1,6 @@
+{
+  "identifier": "main",
+  "description": "The local Movroot shell has no IPC grants.",
+  "windows": ["main"],
+  "permissions": []
+}

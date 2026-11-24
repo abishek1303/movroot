@@ -1,0 +1,48 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'src-tauri/Cargo.lock') }}
+      - name: Verify toolchains
+        run: |
+          node --version
+          node --input-type=module -e "import fs from 'node:fs'; if (process.versions.node !== fs.readFileSync('.node-version', 'utf8').trim()) process.exit(1)"
+          npm --version
+          node -e "if (require('node:child_process').execSync('npm --version').toString().trim() !== require('./package.json').packageManager.slice(4)) process.exit(1)"
+          rustup show
+          rustc -Vv
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm test
+      - run: npm run build
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: npm run tauri -- build --no-bundle -- --locked
+      - run: git diff --exit-code -- package-lock.json src-tauri/Cargo.lock
