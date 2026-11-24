@@ -50,3 +50,40 @@ pub fn clear_device_scope(window: WebviewWindow, request: ClearRequest) -> Resul
     }
     window.state::<DeviceState>().clear(&request.scope_id)
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OperationRequest {
+    scope_id: String,
+    request_id: u32,
+}
+
+#[tauri::command]
+pub async fn discover_device_files(
+    window: WebviewWindow,
+    request: OperationRequest,
+) -> Result<crate::device::Discovery, DeviceError> {
+    if window.label() != "main" {
+        return Err(DeviceError::PermissionDenied);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        window
+            .state::<DeviceState>()
+            .discover(&request.scope_id, request.request_id)
+    })
+    .await
+    .map_err(|_| DeviceError::Unavailable)?
+}
+
+#[tauri::command]
+pub fn cancel_device_operation(
+    window: WebviewWindow,
+    request: OperationRequest,
+) -> Result<(), DeviceError> {
+    if window.label() != "main" {
+        return Err(DeviceError::PermissionDenied);
+    }
+    window
+        .state::<DeviceState>()
+        .cancel(&request.scope_id, request.request_id)
+}

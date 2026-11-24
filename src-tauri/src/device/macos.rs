@@ -70,6 +70,74 @@ impl Root {
     }
 }
 
+pub(super) type Identity = (u64, u64, i64, i64, i64);
+
+fn identity(stat: &fs::Stat) -> Identity {
+    (
+        stat.st_dev as u64,
+        stat.st_ino as u64,
+        stat.st_ctime as i64,
+        stat.st_ctime_nsec as i64,
+        stat.st_size,
+    )
+}
+
+impl Root {
+    pub(super) fn visit(
+        &self,
+        running: &mut impl FnMut() -> bool,
+        visit: &mut impl FnMut(super::discovery::Entry) -> bool,
+    ) -> Result<(), DeviceError> {
+        use super::discovery::Entry;
+        use std::os::unix::ffi::OsStrExt;
+        let root_stat = fs::fstat(&self._fd).map_err(io_error)?;
+        let scan_fd = fs::openat(
+            &self._fd,
+            ".",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(io_error)?;
+        let mut entries = fs::Dir::new(scan_fd).map_err(io_error)?;
+        while running() {
+            let Some(entry) = entries.read() else { break };
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    if !visit(Entry::Unavailable) {
+                        break;
+                    }
+                    return Err(io_error(error));
+                }
+            };
+            let name = entry.file_name();
+            if matches!(name.to_bytes(), b"." | b"..") {
+                continue;
+            }
+            let result = match fs::statat(&self._fd, name, fs::AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(stat)
+                    if fs::FileType::from_raw_mode(stat.st_mode) == fs::FileType::RegularFile
+                        && stat.st_dev == root_stat.st_dev
+                        && stat.st_flags & 0x4000_0000 == 0
+                        && stat.st_nlink == 1 =>
+                {
+                    Entry::File {
+                        name: std::ffi::OsStr::from_bytes(name.to_bytes()).to_owned(),
+                        size: stat.st_size.try_into().ok(),
+                        identity: identity(&stat),
+                    }
+                }
+                Ok(_) => Entry::Skipped,
+                Err(_) => Entry::Unavailable,
+            };
+            if !visit(result) {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

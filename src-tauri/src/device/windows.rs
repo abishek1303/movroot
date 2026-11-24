@@ -191,6 +191,103 @@ impl Root {
     }
 }
 
+pub(super) type Identity = ([u8; 16], i64, i64, i64);
+
+impl Root {
+    pub(super) fn visit(
+        &self,
+        running: &mut impl FnMut() -> bool,
+        visit: &mut impl FnMut(super::discovery::Entry) -> bool,
+    ) -> Result<(), DeviceError> {
+        use super::discovery::Entry;
+        use std::{mem::offset_of, os::windows::ffi::OsStringExt};
+        let mut buffer = [0_u64; 2048];
+        let mut class = fs::FileIdExtdDirectoryRestartInfo;
+        while running() {
+            // The live directory handle and aligned, writable buffer outlive the call.
+            let ok = unsafe {
+                fs::GetFileInformationByHandleEx(
+                    self._handle.as_raw_handle(),
+                    class,
+                    buffer.as_mut_ptr().cast(),
+                    size_of_val(&buffer) as u32,
+                )
+            };
+            if ok == 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
+                    return Ok(());
+                }
+                return Err(io_error(error));
+            }
+            class = fs::FileIdExtdDirectoryInfo;
+            let mut offset = 0;
+            let capacity = size_of_val(&buffer);
+            while running() {
+                let header = offset_of!(fs::FILE_ID_EXTD_DIR_INFO, FileName);
+                if offset + size_of::<fs::FILE_ID_EXTD_DIR_INFO>() > capacity {
+                    return Err(DeviceError::Unavailable);
+                }
+                // A full record header fits inside the initialized buffer.
+                let record = unsafe {
+                    buffer
+                        .as_ptr()
+                        .cast::<u8>()
+                        .add(offset)
+                        .cast::<fs::FILE_ID_EXTD_DIR_INFO>()
+                        .read_unaligned()
+                };
+                let start = offset + header;
+                let end = start
+                    .checked_add(record.FileNameLength as usize)
+                    .ok_or(DeviceError::Unavailable)?;
+                let next = record.NextEntryOffset as usize;
+                if start % 2 != 0
+                    || end % 2 != 0
+                    || end > capacity
+                    || (next != 0 && (next < end - offset || next > capacity - offset))
+                {
+                    return Err(DeviceError::Unavailable);
+                }
+                // The filename is a checked, aligned UTF-16 slice in the buffer.
+                let name = unsafe {
+                    std::slice::from_raw_parts(
+                        buffer.as_ptr().cast::<u8>().add(start).cast::<u16>(),
+                        (end - start) / 2,
+                    )
+                };
+                if name != [46] && name != [46, 46] {
+                    let entry = if record.FileAttributes
+                        & (REJECTED_ATTRIBUTES | fs::FILE_ATTRIBUTE_DIRECTORY)
+                        != 0
+                    {
+                        Entry::Skipped
+                    } else {
+                        Entry::File {
+                            name: std::ffi::OsString::from_wide(name),
+                            size: record.EndOfFile.try_into().ok(),
+                            identity: (
+                                record.FileId.Identifier,
+                                record.ChangeTime,
+                                record.LastWriteTime,
+                                record.EndOfFile,
+                            ),
+                        }
+                    };
+                    if !visit(entry) {
+                        return Ok(());
+                    }
+                }
+                if next == 0 {
+                    break;
+                }
+                offset += next;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

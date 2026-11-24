@@ -21,7 +21,9 @@ pub fn run() {
         .manage(device::DeviceState::default())
         .invoke_handler(tauri::generate_handler![
             commands::device::select_device_scope,
-            commands::device::clear_device_scope
+            commands::device::clear_device_scope,
+            commands::device::discover_device_files,
+            commands::device::cancel_device_operation
         ])
         .setup(|app| {
             let config = app.config();

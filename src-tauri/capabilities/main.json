@@ -2,5 +2,10 @@
   "identifier": "main",
   "description": "Allow the local main window to request and clear a device scope.",
   "windows": ["main"],
-  "permissions": ["allow-select-device-scope", "allow-clear-device-scope"]
+  "permissions": [
+    "allow-select-device-scope",
+    "allow-clear-device-scope",
+    "allow-discover-device-files",
+    "allow-cancel-device-operation"
+  ]
 }
