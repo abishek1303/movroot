@@ -3,7 +3,7 @@ name: Verify
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, feat/m1-device-integration]
 
 permissions:
   contents: read
@@ -43,6 +43,14 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+      - name: Run Windows filesystem security gate
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $output = cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device::windows::tests::relative_open_matches_listing_identity_and_detects_replacement -- --exact 2>&1
+          $code = $LASTEXITCODE
+          $output | Out-Host
+          if ($code -ne 0 -or ($output -join "`n") -notmatch '1 passed; 0 failed; 0 ignored') { exit 1 }
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - run: npm run tauri -- build --no-bundle -- --locked
       - run: git diff --exit-code -- package-lock.json src-tauri/Cargo.lock

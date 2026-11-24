@@ -1,5 +1,9 @@
+mod commands;
+mod device;
+
 use tauri::{
-    WebviewWindowBuilder,
+    Manager, WebviewWindowBuilder,
+    webview::PageLoadEvent,
     webview::{NewWindowResponse, Url},
 };
 
@@ -13,6 +17,12 @@ fn allows_navigation(url: &Url, allowed_origin: &Url) -> bool {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .manage(device::DeviceState::default())
+        .invoke_handler(tauri::generate_handler![
+            commands::device::select_device_scope,
+            commands::device::clear_device_scope
+        ])
         .setup(|app| {
             let config = app.config();
             let window = &config.app.windows[0];
@@ -23,8 +33,24 @@ pub fn run() {
             } else {
                 Url::parse("tauri://localhost")?
             };
+            let navigation_owner = app.handle().clone();
             WebviewWindowBuilder::from_config(app, window)?
-                .on_navigation(move |url| allows_navigation(url, &origin))
+                .on_navigation(move |url| {
+                    let allowed = allows_navigation(url, &origin);
+                    if allowed {
+                        navigation_owner
+                            .state::<device::DeviceState>()
+                            .page_loading();
+                    }
+                    allowed
+                })
+                .on_page_load(|window, payload| {
+                    let state = window.state::<device::DeviceState>();
+                    match payload.event() {
+                        PageLoadEvent::Started => state.page_loading(),
+                        PageLoadEvent::Finished => state.page_ready(),
+                    }
+                })
                 .on_new_window(|_, _| NewWindowResponse::Deny)
                 .build()?;
             Ok(())

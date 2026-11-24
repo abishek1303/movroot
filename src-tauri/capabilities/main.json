@@ -1,6 +1,6 @@
 {
   "identifier": "main",
-  "description": "The local Movroot shell has no IPC grants.",
+  "description": "Allow the local main window to request and clear a device scope.",
   "windows": ["main"],
-  "permissions": []
+  "permissions": ["allow-select-device-scope", "allow-clear-device-scope"]
 }
