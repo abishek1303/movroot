@@ -1,8 +1,16 @@
+import type { FileAnalysis } from "../../file-analysis/application/workflow";
+import { FileAnalysisPanel } from "../../file-analysis/ui/FileAnalysisPanel";
 import { useEffect, useRef, useState } from "react";
 import type { DeviceScope, Discovery, FileId } from "../application/contracts";
 import type { DeviceAdapter } from "../application/device";
 
-export function DiscoveryScreen({ device }: { device: DeviceAdapter }) {
+export function DiscoveryScreen({
+  device,
+  analysis,
+}: {
+  device: DeviceAdapter;
+  analysis: FileAnalysis;
+}) {
   const [scope, setScope] = useState<DeviceScope>();
   const [selecting, setSelecting] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -176,6 +184,15 @@ export function DiscoveryScreen({ device }: { device: DeviceAdapter }) {
             discardPreview();
             setStatus("Could not display the generated preview.");
           }}
+        />
+      )}
+      {scope && listing && listing.files.length > 0 && (
+        <FileAnalysisPanel
+          key={listing.files[0].fileId}
+          analysis={analysis}
+          scope={scope.scopeId}
+          files={listing.files}
+          deviceBusy={selecting || clearing || scanning || previewing}
         />
       )}
       {listing && listing.files.length > 0 && (

@@ -1,5 +1,6 @@
 mod commands;
 mod device;
+mod inference;
 
 use tauri::{
     Manager, WebviewWindowBuilder,
@@ -19,14 +20,25 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(device::DeviceState::default())
+        .manage(inference::State::default())
         .invoke_handler(tauri::generate_handler![
             commands::device::select_device_scope,
             commands::device::clear_device_scope,
             commands::device::discover_device_files,
             commands::device::cancel_device_operation,
-            commands::device::read_device_file
+            commands::device::read_device_file,
+            commands::inference::muse_ember_key_status,
+            commands::inference::set_muse_ember_key,
+            commands::inference::remove_muse_ember_key,
+            commands::inference::infer_muse_ember,
+            commands::file_analysis::prepare_file_analysis,
+            commands::file_analysis::approve_file_analysis,
+            commands::file_analysis::discard_file_analysis,
+            commands::file_analysis::infer_muse_ember_file,
+            commands::inference::cancel_muse_ember_inference
         ])
         .setup(|app| {
+            app.manage(inference::transport::client()?);
             let config = app.config();
             let window = &config.app.windows[0];
             let origin = if cfg!(dev) {
@@ -41,6 +53,7 @@ pub fn run() {
                 .on_navigation(move |url| {
                     let allowed = allows_navigation(url, &origin);
                     if allowed {
+                        navigation_owner.state::<inference::State>().page_loading();
                         navigation_owner
                             .state::<device::DeviceState>()
                             .page_loading();
@@ -50,8 +63,14 @@ pub fn run() {
                 .on_page_load(|window, payload| {
                     let state = window.state::<device::DeviceState>();
                     match payload.event() {
-                        PageLoadEvent::Started => state.page_loading(),
-                        PageLoadEvent::Finished => state.page_ready(),
+                        PageLoadEvent::Started => {
+                            state.page_loading();
+                            window.state::<inference::State>().page_loading();
+                        }
+                        PageLoadEvent::Finished => {
+                            state.page_ready();
+                            window.state::<inference::State>().page_ready();
+                        }
                     }
                 })
                 .on_new_window(|_, _| NewWindowResponse::Deny)

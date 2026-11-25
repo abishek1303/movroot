@@ -15,6 +15,25 @@ function normalizeError(value: unknown) {
 
 let activeScope: { scopeId: string; requestId: number } | undefined;
 
+export async function runScopedDeviceOperation<T>(
+  scopeId: Parameters<DeviceAdapter["discover"]>[0],
+  signal: AbortSignal,
+  execute: (request: { scopeId: string; requestId: number }) => Promise<T>,
+) {
+  if (signal.aborted) throw "cancelled";
+  if (activeScope?.scopeId !== scopeId) throw "scopeInactive";
+  const request = { scopeId, requestId: ++activeScope.requestId };
+  const cancel = () => {
+    void invoke("cancel_device_operation", { request }).catch(() => undefined);
+  };
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    return await execute(request);
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
+}
+
 export const tauriDevice: DeviceAdapter = {
   async selectScope() {
     try {

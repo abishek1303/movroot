@@ -6,6 +6,15 @@ fn main() {
             "discover_device_files",
             "cancel_device_operation",
             "read_device_file",
+            "muse_ember_key_status",
+            "set_muse_ember_key",
+            "remove_muse_ember_key",
+            "infer_muse_ember",
+            "prepare_file_analysis",
+            "approve_file_analysis",
+            "discard_file_analysis",
+            "infer_muse_ember_file",
+            "cancel_muse_ember_inference",
         ]),
     ))
     .expect("could not build Movroot permissions");

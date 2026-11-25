@@ -9,3 +9,5 @@ Movroot is a desktop-first file organizer. The desktop targets are macOS and Win
 - Use the pinned toolchains and commit both lockfiles with dependency changes. Use Context7 for library and tool documentation, and verify platform and version requirements against official sources. Keep changes scoped and review observable differences on macOS and Windows.
 - Run the checks in `ARCHITECTURE.md`. Prefer portable unit tests with fakes and native tests for OS behavior. Require durable recovery records before introducing filesystem mutation.
 - Preserve established decisions unless explicitly revisited. Update `ARCHITECTURE.md` with material decisions and the actual verification status.
+
+Consult [the Meta API implementation reference](docs/meta-api.md) before changing the Muse Ember integration.

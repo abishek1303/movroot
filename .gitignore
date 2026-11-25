@@ -9,6 +9,7 @@ node_modules/
 /coverage/
 /test-results/
 /playwright-report/
+# Local credentials and environment overrides
 .env
 .env.*
 !.env.example

@@ -1,12 +1,21 @@
 {
   "identifier": "main",
-  "description": "Allow the local main window to request and clear a device scope.",
+  "description": "Allow the local main window to use device and diagnostic inference commands.",
   "windows": ["main"],
   "permissions": [
     "allow-select-device-scope",
     "allow-clear-device-scope",
     "allow-discover-device-files",
     "allow-cancel-device-operation",
-    "allow-read-device-file"
+    "allow-read-device-file",
+    "allow-muse-ember-key-status",
+    "allow-set-muse-ember-key",
+    "allow-remove-muse-ember-key",
+    "allow-infer-muse-ember",
+    "allow-prepare-file-analysis",
+    "allow-approve-file-analysis",
+    "allow-discard-file-analysis",
+    "allow-infer-muse-ember-file",
+    "allow-cancel-muse-ember-inference"
   ]
 }

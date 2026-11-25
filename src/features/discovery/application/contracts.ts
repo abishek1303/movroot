@@ -23,6 +23,7 @@ export const deviceErrorSchema = z.enum([
   "limitExceeded",
   "resourceChanged",
   "decodeFailed",
+  "pdfDeferred",
 ]);
 
 export type ScopeId = z.infer<typeof scopeIdSchema>;

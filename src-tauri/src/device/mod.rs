@@ -4,7 +4,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+pub mod analysis;
 mod discovery;
+mod preparation;
 mod preview;
 mod read;
 pub use read::ReadMode;
@@ -65,6 +67,7 @@ pub enum DeviceError {
     ResourceChanged,
     LimitExceeded,
     DecodeFailed,
+    PdfDeferred,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -133,6 +136,7 @@ struct Session {
     accept_picker: bool,
     active: Option<Grant>,
     operation: Option<Operation>,
+    analysis: Option<analysis::Plan>,
 }
 
 #[derive(Default)]
@@ -148,6 +152,7 @@ impl DeviceState {
     pub fn page_loading(&self) {
         let mut session = self.0.lock().unwrap();
         session.ready = false;
+        session.analysis = None;
         session.accept_picker = false;
         Self::cancel_active(&session);
         session.active = None;
@@ -210,6 +215,7 @@ impl DeviceState {
         match opened.transpose()? {
             Some((scope, root)) => {
                 Self::cancel_active(&session);
+                session.analysis = None;
                 session.active = Some(Grant {
                     scope: scope.clone(),
                     root: Arc::new(root),
@@ -239,6 +245,7 @@ impl DeviceState {
         }
         Self::cancel_active(&session);
         session.active = None;
+        session.analysis = None;
         session.accept_picker = false;
         Ok(())
     }
@@ -330,6 +337,7 @@ impl DeviceState {
         }
         let (result, resources) = scanned?;
         grant.resources = resources;
+        session.analysis = None;
         Ok(result)
     }
 
