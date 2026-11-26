@@ -1,3 +1,9 @@
+import { fileVisualKind } from "../../../components/motion/Artwork";
+import {
+  FilesystemBrowser,
+  rowPageSize,
+  FileTypeIcon,
+} from "./FilesystemBrowser";
 import { useLayoutEffect, useRef, useState } from "react";
 import type { Discovery, FileId } from "../../discovery/application/contracts";
 import { suggestedName } from "../application/contracts";
@@ -60,7 +66,8 @@ export function ReviewPreview({
   onPreviewError: () => void;
   onPreviewLoad: () => void;
 }) {
-  const [view, setView] = useState<"current" | "proposed">("proposed");
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(0);
   const [excluded, setExcluded] = useState<ReadonlySet<FileId>>(
     () => new Set(),
   );
@@ -148,18 +155,42 @@ export function ReviewPreview({
   const root: ReviewNode = {
     kind: "folder",
     name: folder,
-    children:
-      view === "current"
-        ? files.map(leaf)
-        : [
-            ...[...categories].map(([name, children]): ReviewNode => ({
-              kind: "folder",
-              name,
-              children: children.map(leaf),
-            })),
-            ...unchanged.map(leaf),
-          ],
+    children: [
+      ...[...categories].map(([name, children]): ReviewNode => ({
+        kind: "folder",
+        name,
+        children: children.map(leaf),
+      })),
+      ...unchanged.map(leaf),
+    ],
   };
+  const moved = [...categories.values()].flat();
+  const originals = new Map(
+    files.map((file) => [file.fileId, file.displayName]),
+  );
+  const proposed = [...moved, ...unchanged];
+  const matching = proposed.filter((file) =>
+    [
+      file.displayName,
+      originals.get(file.fileId),
+      drafts.get(file.fileId)?.destination,
+    ].some((value) =>
+      value?.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()),
+    ),
+  );
+  const pageIds = new Set(
+    matching
+      .slice(page * rowPageSize, (page + 1) * rowPageSize)
+      .map((file) => file.fileId),
+  );
+  const renamed = proposed.filter(
+    (file) => file.displayName !== originals.get(file.fileId),
+  );
+  const changed = new Set([...moved, ...renamed].map((file) => file.fileId));
+  const includesPage = (node: ReviewNode): boolean =>
+    node.kind === "file"
+      ? pageIds.has(node.file.fileId)
+      : node.children.some(includesPage);
 
   function renderNode(node: ReviewNode, isRoot = false) {
     const ids = selectableFiles(node, drafts);
@@ -184,9 +215,17 @@ export function ReviewPreview({
             <details open>
               <summary>
                 <span className="folder-icon" aria-hidden="true" />
-                {node.name}
+                {node.name}{" "}
+                <small>
+                  {node.children.length}{" "}
+                  {isRoot ? "items" : "files · Proposed folder"}
+                </small>
               </summary>
-              <ul>{node.children.map((child) => renderNode(child))}</ul>
+              <ul>
+                {node.children
+                  .filter(includesPage)
+                  .map((child) => renderNode(child))}
+              </ul>
             </details>
           </div>
         </li>
@@ -210,7 +249,7 @@ export function ReviewPreview({
           aria-pressed={id === inspected}
           onClick={() => showFile(id)}
         >
-          <span className="file-icon" aria-hidden="true" />
+          <FileTypeIcon tone={fileVisualKind(node.file.extension)} />
           {node.file.displayName}
         </button>
         {status && (
@@ -230,40 +269,57 @@ export function ReviewPreview({
 
   return (
     <section aria-label="Review changes" className="review-preview">
-      <div className="folder-toolbar">
-        <button onClick={onBack}>Back to analysis</button>
-        <div className="view-switch" role="group" aria-label="Structure">
-          <button
-            aria-pressed={view === "current"}
-            onClick={() => setView("current")}
-          >
-            Current
-          </button>
-          <button
-            aria-pressed={view === "proposed"}
-            onClick={() => setView("proposed")}
-          >
-            Proposed
-          </button>
-        </div>
+      <div className="stage-count">
+        <strong>{changed.size.toLocaleString()}</strong> files with proposed
+        changes
       </div>
-      <div className="review-layout" data-inspecting={Boolean(file)}>
-        <div
-          className="review-scroll"
-          ref={tree}
-          role="region"
-          aria-label={
-            view === "current" ? "Current structure" : "Proposed structure"
+      <p className="outcome-row">
+        <span>
+          {moved.length} {moved.length === 1 ? "move" : "moves"}
+        </span>
+        <span>
+          {renamed.length} {renamed.length === 1 ? "rename" : "renames"}
+        </span>
+        <span>{files.length - changed.size} unchanged</span>
+        {issues.size > 0 && <span>{issues.size} conflicts</span>}
+      </p>
+      <div className="review-layout">
+        <FilesystemBrowser
+          title="Proposed structure"
+          query={query}
+          onSearch={(value) => {
+            setQuery(value);
+            setPage(0);
+          }}
+          scrollRef={tree}
+          footer={
+            <>
+              <span>{matching.length} files</span>
+              {matching.length > rowPageSize && (
+                <div>
+                  <button disabled={!page} onClick={() => setPage(page - 1)}>
+                    Previous
+                  </button>{" "}
+                  <button
+                    disabled={(page + 1) * rowPageSize >= matching.length}
+                    onClick={() => setPage(page + 1)}
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
+            </>
           }
-          tabIndex={0}
         >
           <ul className="file-tree">{renderNode(root, true)}</ul>
-        </div>
+        </FilesystemBrowser>
         {file && (
           <aside className="review-inspector" aria-label="File details">
             <dl>
               <dt>Original name</dt>
               <dd>{file.displayName}</dd>
+              <dt>Original location</dt>
+              <dd>{folder}</dd>
               {draft && (
                 <>
                   <dt>Proposed name</dt>
@@ -364,6 +420,15 @@ export function ReviewPreview({
             )}
           </aside>
         )}
+      </div>
+      <div className="workflow-dock">
+        <strong>
+          {changed.size} {changed.size === 1 ? "change" : "changes"} selected
+        </strong>
+        <span>
+          {issues.size ? `${issues.size} conflicts · ` : ""}Read-only proposal
+        </span>
+        <button onClick={onBack}>Back to Analyze</button>
       </div>
     </section>
   );

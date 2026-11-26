@@ -1,9 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Failure, InferenceOutcome } from "../application/contracts";
-import {
-  diagnosticInput,
-  diagnosticText,
-} from "../application/diagnostic-input";
+import { diagnosticInput } from "../application/diagnostic-input";
 import type {
   CredentialSettings,
   CredentialStatus,
@@ -18,7 +15,7 @@ import {
 const messages: Partial<Record<Failure["code"], string>> = {
   invalidCredential: "Enter a valid API key.",
   credentialMissing: "Save a Muse Ember API key first.",
-  credentialConfiguration: "Could not read the development .env configuration.",
+  credentialConfiguration: "Could not read the API key configuration.",
   credentialStore: "The operating system credential store is unavailable.",
   authentication: "Meta rejected the API key.",
   accessDenied: "This project does not have access to Muse Ember.",
@@ -34,44 +31,60 @@ const messages: Partial<Record<Failure["code"], string>> = {
   missingOutput: "The response contained no final text.",
   unexpectedOutput: "The response contained an unexpected output type.",
   budgetExceeded: "The diagnostic dispatch budget was reached.",
-  staleSession: "Refresh the key status to reconnect to the current window.",
+  staleSession: "Reopen Settings and try again.",
 };
 
 function explain(error: Failure): string {
   const message =
-    messages[error.code] ?? `Inference operation failed (${error.code}).`;
+    messages[error.code] ?? "The provider operation could not be completed.";
   return error.retryAfterSeconds == null
     ? message
     : `${message} Try again after ${error.retryAfterSeconds} seconds.`;
 }
 
-function usd(nanodollars: number): string {
-  return `$${(nanodollars / 1_000_000_000).toFixed(9)}`;
+const icons = {
+  refresh: "M20 11a8 8 0 1 0-2 6m2-12v6h-6",
+  edit: "m4 16-1 5 5-1L20 8l-4-4L4 16Zm10-10 4 4",
+  add: "M12 5v14M5 12h14",
+  show: "M2 12s4-6 10-6 10 6 10 6-4 6-10 6S2 12 2 12Zm13 0a3 3 0 1 0-6 0 3 3 0 0 0 6 0Z",
+  hide: "M3 3l18 18M10 6a12 12 0 0 1 2 0c6 0 10 6 10 6a17 17 0 0 1-4 4M6 7a17 17 0 0 0-4 5s4 6 10 6a12 12 0 0 0 2-.2",
+  remove: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7m4-7v7",
+  save: "m4 12 5 5L20 6",
+  close: "m6 6 12 12M18 6 6 18",
+} as const;
+
+function Icon({ name }: { name: keyof typeof icons }) {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <path d={icons[name]} />
+    </svg>
+  );
 }
 
 export function InferencePanel({
   provider,
   credentials,
   visible,
+  model,
 }: {
   provider: InferenceProvider;
   credentials: CredentialSettings;
   visible: boolean;
+  model: string;
 }) {
   const [session] = useState(() => createInferenceSession(provider));
-  const keyField = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (!visible && keyField.current) keyField.current.value = "";
-  }, [visible]);
+  const [editing, setEditing] = useState(false);
+  const [showDraft, setShowDraft] = useState(false);
+  const [confirmCheck, setConfirmCheck] = useState(false);
   const [status, setStatus] = useState<CredentialStatus>();
-  const [busy, setBusy] = useState<"credential" | "inference" | undefined>(
-    "credential",
-  );
+  const [busy, setBusy] = useState<"credential" | "inference" | undefined>();
   const [message, setMessage] = useState("");
   const [outcome, setOutcome] = useState<InferenceOutcome>();
   const [usage, setUsage] = useState(emptyUsage);
+  const keyField = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    if (!visible) return;
     let disposed = false;
     let timer: number | undefined;
     async function initialize(attemptsLeft: number) {
@@ -81,231 +94,294 @@ export function InferencePanel({
         setStatus(current.value);
       } else if (
         attemptsLeft > 0 &&
-        (current.error.code === "staleSession" || current.error.code === "busy")
+        ["staleSession", "busy"].includes(current.error.code)
       ) {
         timer = window.setTimeout(() => void initialize(attemptsLeft - 1), 100);
-        return;
       } else {
         setMessage(explain(current.error));
       }
-      setBusy(undefined);
     }
     void initialize(10);
     return () => {
       disposed = true;
       window.clearTimeout(timer);
-      session.invalidate();
+      setEditing(false);
+      setShowDraft(false);
+      setConfirmCheck(false);
     };
-  }, [credentials, session]);
+  }, [credentials, visible]);
+  useEffect(() => () => session.invalidate(), [session]);
+
+  function editKey() {
+    setEditing(true);
+    setConfirmCheck(false);
+    setShowDraft(false);
+    setMessage("");
+  }
+
+  function closeEditor() {
+    if (keyField.current) keyField.current.value = "";
+    setEditing(false);
+    setShowDraft(false);
+  }
 
   async function refresh() {
     const current = await credentials.status();
     if (current.ok) setStatus(current.value);
     else setMessage(explain(current.error));
+    return current;
   }
 
-  async function update(action: "status" | "save" | "remove") {
+  async function update(action: "save" | "remove") {
+    if (busy || !status || status.source === "environment") return;
+    const key = keyField.current?.value.trim() ?? "";
+    if (action === "save" && !key) {
+      setMessage("Enter an API key.");
+      return;
+    }
+    if (action === "save") setShowDraft(false);
     setBusy("credential");
     setMessage("");
-    const field = keyField.current;
-    const key = action === "save" ? (field?.value.trim() ?? "") : "";
-    if (action === "save" && field) field.value = "";
     try {
-      if (action === "status" || !status) {
-        const current = await credentials.status();
-        if (!current.ok) {
-          setMessage(explain(current.error));
-          return;
-        }
-        setStatus(current.value);
-        if (action === "status") return;
-      }
-      let result;
-      if (action === "save") {
-        result = await credentials.save(key);
-      } else {
-        result = await credentials.remove();
-        session.invalidate();
+      const result =
+        action === "save"
+          ? await credentials.save(key)
+          : await credentials.remove();
+      if (result.ok) {
         setOutcome(undefined);
+        closeEditor();
+      } else {
+        setMessage(explain(result.error));
       }
-      if (!result.ok) setMessage(explain(result.error));
       await refresh();
     } finally {
       setBusy(undefined);
     }
   }
 
-  async function run(kind: "text" | "image") {
+  async function requestCheck() {
+    if (busy) return;
+    setBusy("credential");
+    setMessage("");
+    try {
+      const current = await refresh();
+      if (!current.ok || current.value.source === "missing") {
+        if (current.ok) setOutcome(undefined);
+        return;
+      }
+      if (
+        !current.value.remainingDispatches ||
+        usage.estimatedNanodollars >= ESTIMATED_SESSION_LIMIT
+      ) {
+        setMessage(
+          "The connection check limit has been reached for this session.",
+        );
+        return;
+      }
+      setConfirmCheck(true);
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function checkConnection() {
+    if (busy) return;
+    setConfirmCheck(false);
     setBusy("inference");
     setMessage("");
     setOutcome(undefined);
     try {
-      const result = await session.run(diagnosticInput(kind));
-      if (!result) return;
-      setUsage(result.usage);
-      setOutcome(result.outcome);
-      if (!result.outcome.ok) setMessage(explain(result.outcome.error));
+      const result = await session.run(diagnosticInput("text"));
+      if (result) {
+        setUsage(result.usage);
+        setOutcome(result.outcome);
+        if (!result.outcome.ok) setMessage(explain(result.outcome.error));
+      }
       await refresh();
     } finally {
       setBusy(undefined);
     }
   }
 
-  const disabled =
-    Boolean(busy) ||
-    !status ||
-    status.source === "missing" ||
-    status.remainingDispatches === 0 ||
-    usage.estimatedNanodollars >= ESTIMATED_SESSION_LIMIT;
-  const metrics = outcome?.metrics;
+  const configured = Boolean(status && status.source !== "missing");
+  const effectiveOutcome = configured ? outcome : undefined;
+  const health =
+    busy === "inference"
+      ? "Checking connection…"
+      : effectiveOutcome?.ok
+        ? "Healthy · last check passed"
+        : effectiveOutcome
+          ? "Last check failed"
+          : configured
+            ? "Configured · unchecked"
+            : status
+              ? "No API key configured"
+              : "Key status unavailable";
+  const canEdit = status && status.source !== "environment";
+
   return (
-    <section aria-label="Meta provider">
-      <h2>Meta provider</h2>
-      <p>
-        {status?.source === "environment"
-          ? "Using the development environment credential. It takes precedence over stored credentials."
-          : status?.source === "secureStore"
-            ? "API key stored."
-            : status?.source === "missing"
-              ? "No API key stored."
-              : "API key status unknown."}
-      </p>
-      {status?.source !== "environment" && (
-        <>
-          <label>
-            Meta API key{" "}
+    <section className="provider-panel" aria-label="Meta provider">
+      <div className="provider-heading">
+        <strong>Meta Model API</strong>
+        <span>{model}</span>
+      </div>
+      <div className="key-health">
+        <span
+          className="key-health-label"
+          role="status"
+          data-health={
+            busy === "inference"
+              ? "pending"
+              : effectiveOutcome?.ok
+                ? "healthy"
+                : effectiveOutcome
+                  ? "failed"
+                  : "unknown"
+          }
+        >
+          <span className="key-health-dot" aria-hidden="true" />
+          {health}
+        </span>
+        <button
+          className="provider-icon"
+          aria-label={
+            busy === "inference"
+              ? "Cancel connection check"
+              : "Refresh connection health"
+          }
+          title={
+            busy === "inference"
+              ? "Cancel connection check"
+              : "Check the connection to Meta"
+          }
+          disabled={busy === "credential" || Boolean(visible && editing)}
+          onClick={() =>
+            busy === "inference" ? session.cancel() : void requestCheck()
+          }
+        >
+          <Icon name={busy === "inference" ? "close" : "refresh"} />
+        </button>
+      </div>
+      {visible && editing && canEdit ? (
+        <form
+          className="credential-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void update("save");
+          }}
+        >
+          <label htmlFor="replacement-meta-key">
+            {configured ? "Replacement API key" : "Meta API key"}
+          </label>
+          <div className="key-controls">
             <input
-              type="password"
+              id="replacement-meta-key"
+              type={showDraft ? "text" : "password"}
               ref={keyField}
-              autoComplete="off"
+              autoComplete="new-password"
+              spellCheck={false}
+              required
               maxLength={1024}
               disabled={Boolean(busy)}
+              autoFocus
             />
-          </label>
-          <button disabled={Boolean(busy)} onClick={() => update("save")}>
-            Save API key
-          </button>
-          <button
-            disabled={Boolean(busy) || status?.source !== "secureStore"}
-            onClick={() => update("remove")}
-          >
-            Remove API key
-          </button>
-        </>
+            <button
+              className="provider-icon"
+              type="button"
+              aria-label={showDraft ? "Hide key" : "Show key"}
+              title={showDraft ? "Hide key" : "Show key"}
+              onClick={() => setShowDraft(!showDraft)}
+            >
+              <Icon name={showDraft ? "hide" : "show"} />
+            </button>
+            <button
+              className="provider-icon"
+              type="submit"
+              aria-label="Save key"
+              title="Save key"
+              disabled={Boolean(busy)}
+            >
+              <Icon name="save" />
+            </button>
+            <button
+              className="provider-icon"
+              type="button"
+              aria-label="Cancel editing"
+              title="Cancel editing"
+              disabled={Boolean(busy)}
+              onClick={closeEditor}
+            >
+              <Icon name="close" />
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="key-controls">
+          {configured ? (
+            <span className="masked-key" aria-label="Stored API key is masked">
+              ••••••••••••
+            </span>
+          ) : (
+            <span className="key-placeholder">Meta API key</span>
+          )}
+          {canEdit && (
+            <button
+              className="provider-icon"
+              aria-label={configured ? "Edit key" : "Add key"}
+              title={configured ? "Edit key" : "Add key"}
+              disabled={Boolean(busy)}
+              onClick={editKey}
+            >
+              <Icon name={configured ? "edit" : "add"} />
+            </button>
+          )}
+          {status?.source === "secureStore" && (
+            <button
+              className="provider-icon"
+              aria-label="Remove key"
+              title="Remove key"
+              disabled={Boolean(busy)}
+              onClick={() => void update("remove")}
+            >
+              <Icon name="remove" />
+            </button>
+          )}
+        </div>
       )}
-      <button disabled={Boolean(busy)} onClick={() => update("status")}>
-        Refresh key status
-      </button>
-      <p role="status">
-        {busy === "inference" ? "Waiting for Muse Ember…" : message}
-      </p>
-      <details>
-        <summary>Developer diagnostics</summary>
-        {status && <p>{status.remainingDispatches} dispatches remaining.</p>}
-        <p>
-          Each request sends one bundled example to Meta using your project
-          credits.
-        </p>
-        <details>
-          <summary>Synthetic examples</summary>
-          <p>{diagnosticText}</p>
+      {confirmCheck && visible && !editing && (
+        <div className="key-check-confirm">
           <p>
-            The image is a 64 × 64 illustration of an orange circle on a blue
-            background.
+            The check sends a built-in example to Meta and may use API credits.
           </p>
-        </details>
-        <button disabled={disabled} onClick={() => run("text")}>
-          Send text to Meta
-        </button>
-        <button disabled={disabled} onClick={() => run("image")}>
-          Send image to Meta
-        </button>
-        <button
-          disabled={busy !== "inference"}
-          onClick={() => session.cancel()}
-        >
-          Cancel inference
-        </button>
-        {outcome?.ok && (
-          <dl>
-            <dt>Summary</dt>
-            <dd>{outcome.value.summary}</dd>
-            <dt>Category</dt>
-            <dd>{outcome.value.category}</dd>
-            <dt>Tags</dt>
-            <dd>{outcome.value.tags.join(", ") || "None"}</dd>
-            <dt>Uncertainty</dt>
-            <dd>{outcome.value.uncertainty.join(" ") || "None reported"}</dd>
-          </dl>
-        )}
-        {metrics && (
-          <dl>
-            <dt>Model</dt>
-            <dd>{metrics.model}</dd>
-            <dt>Elapsed</dt>
-            <dd>{metrics.elapsedMs} ms</dd>
-            <dt>Input / output tokens</dt>
-            <dd>
-              {metrics.usage
-                ? `${metrics.usage.inputTokens} / ${metrics.usage.outputTokens}`
-                : "Unknown"}
-            </dd>
-            {metrics.usage && (
-              <>
-                <dt>Cached input / reasoning tokens</dt>
-                <dd>
-                  {metrics.usage.cachedInputTokens ?? "Unknown"} /{" "}
-                  {metrics.usage.reasoningTokens ?? "Unknown"}
-                </dd>
-              </>
-            )}
-            <dt>Estimated request cost</dt>
-            <dd>
-              {metrics.cost
-                ? `${usd(metrics.cost.nanodollars)}${metrics.cost.upperEstimate ? " (upper estimate)" : ""}`
-                : "Unknown"}
-            </dd>
-          </dl>
-        )}
-        {metrics?.diagnostics && (
-          <details>
-            <summary>Request diagnostics</summary>
-            <dl>
-              {outcome && !outcome.ok && (
-                <>
-                  <dt>Error category</dt>
-                  <dd>{outcome.error.code}</dd>
-                </>
-              )}
-              {Object.entries(metrics.diagnostics)
-                .filter(([, value]) => value !== undefined)
-                .map(([label, value]) => (
-                  <div key={label}>
-                    <dt>
-                      {label.replace(
-                        /[A-Z]/g,
-                        (char) => ` ${char.toLowerCase()}`,
-                      )}
-                    </dt>
-                    <dd>{value}</dd>
-                  </div>
-                ))}
-            </dl>
-          </details>
-        )}
-        <p>
-          Session estimate for priced responses:{" "}
-          {usage.pricedResponses ? usd(usage.estimatedNanodollars) : "Unknown"}
-          {usage.includesUpperEstimate ? " (includes upper estimates)" : ""}.
-          Unreconciled attempts: {usage.unreconciledAttempts}.
+          <div className="folder-toolbar">
+            <button
+              className="primary"
+              onClick={() => void checkConnection()}
+              disabled={Boolean(busy)}
+            >
+              Run check
+            </button>
+            <button
+              className="provider-icon"
+              aria-label="Dismiss connection check"
+              title="Dismiss"
+              onClick={() => setConfirmCheck(false)}
+            >
+              <Icon name="close" />
+            </button>
+          </div>
+        </div>
+      )}
+      {status?.source === "environment" && (
+        <small className="key-source">
+          Managed by the development environment
+        </small>
+      )}
+      {message && (
+        <p className="key-message" role="status">
+          {message}
         </p>
-        {usage.usageResponses > 0 && (
-          <p>
-            Reported session tokens: {usage.inputTokens} input /{" "}
-            {usage.outputTokens} output.
-          </p>
-        )}
-      </details>
+      )}
     </section>
   );
 }

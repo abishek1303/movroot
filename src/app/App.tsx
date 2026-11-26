@@ -1,3 +1,8 @@
+import { useInterfaceMotion } from "../components/motion/useInterfaceMotion";
+import { AppearanceSegments } from "./AppearanceSegments";
+import { gsap, useGSAP } from "../components/motion/engine";
+import { accentNames, loadAppearance, saveAppearance } from "./appearance";
+import model from "../../fixtures/file-semantic-v1.json";
 import { useEffect, useRef, useState } from "react";
 import { createFileAnalysis } from "../features/file-analysis/application/workflow";
 import { createMuseFileAnalysis } from "../infrastructure/inference/muse-file-analysis";
@@ -7,7 +12,6 @@ import { createMuseConnection } from "../infrastructure/inference/tauri-muse-tra
 import { DiscoveryScreen } from "../features/discovery/ui/DiscoveryScreen";
 import { tauriDevice } from "../infrastructure/device/tauri-device";
 
-import { appearanceSchema, loadAppearance, saveAppearance } from "./appearance";
 import type { Appearance } from "./appearance";
 
 const muse = createMuseConnection();
@@ -35,6 +39,7 @@ export function App() {
     return () => preference.removeEventListener("change", update);
   }, []);
   const [storageError, setStorageError] = useState(false);
+  const shell = useRef<HTMLDivElement>(null);
   const header = useRef<HTMLElement>(null);
   const appearanceButton = useRef<HTMLButtonElement>(null);
   const settingsButton = useRef<HTMLButtonElement>(null);
@@ -68,6 +73,96 @@ export function App() {
     return () => document.removeEventListener("pointerdown", dismiss);
   }, [control]);
 
+  const motionEnabled = appearance.motion !== "reduced" && !systemReduced;
+  useInterfaceMotion(shell, motionEnabled);
+  const lastTab = useRef(tab);
+  useGSAP(
+    () => {
+      const previous = lastTab.current;
+      lastTab.current = tab;
+      if (motionEnabled && previous !== tab) {
+        gsap.fromTo(
+          ".nav-indicator",
+          { xPercent: tab === "history" ? -100 : 100 },
+          {
+            xPercent: 0,
+            duration: 0.22,
+            ease: "power2.out",
+            clearProps: "transform",
+          },
+        );
+      }
+    },
+    { scope: header, dependencies: [tab, motionEnabled], revertOnUpdate: true },
+  );
+  const previousControl = useRef(control);
+  useGSAP(
+    () => {
+      const old = previousControl.current;
+      previousControl.current = control;
+      if (!motionEnabled || old === control) return;
+      const panelFor = (name: typeof control) =>
+        name === "appearance"
+          ? appearancePanel.current
+          : name === "settings"
+            ? settingsPanel.current
+            : null;
+      const leaving = panelFor(old);
+      const entering = panelFor(control);
+      if (leaving)
+        gsap.fromTo(
+          leaving,
+          { opacity: 1, y: 0 },
+          {
+            opacity: 0,
+            y: -6,
+            duration: 0.16,
+            ease: "power1.in",
+            clearProps: "transform,opacity",
+          },
+        );
+      if (entering)
+        gsap.fromTo(
+          entering,
+          { opacity: 0, y: -6 },
+          {
+            opacity: 1,
+            y: 0,
+            duration: 0.2,
+            ease: "power2.out",
+            clearProps: "transform,opacity",
+          },
+        );
+    },
+    { dependencies: [control, motionEnabled], revertOnUpdate: true },
+  );
+
+  useGSAP(
+    () => {
+      if (motionEnabled && shell.current) {
+        const scene = [
+          ...shell.current.querySelectorAll("[data-motion-scene]"),
+        ].filter((element) => element.getClientRects().length);
+        if (scene.length)
+          gsap.from(scene, {
+            opacity: 0.8,
+            duration: 0.22,
+            ease: "power2.out",
+          });
+      }
+    },
+    {
+      scope: shell,
+      dependencies: [appearance.mode, appearance.accent, motionEnabled],
+      revertOnUpdate: true,
+    },
+  );
+
+  function openSettings() {
+    setOpenedSettings(true);
+    setControl("settings");
+  }
+
   function changeAppearance(value: Appearance) {
     setAppearance(value);
     setStorageError(
@@ -81,6 +176,7 @@ export function App() {
   return (
     <div
       className="app-shell"
+      ref={shell}
       data-mode={appearance.mode}
       data-accent={appearance.accent}
       data-motion={appearance.motion}
@@ -102,7 +198,8 @@ export function App() {
           </svg>{" "}
           Movroot
         </h1>
-        <nav className="app-nav" aria-label="Workspace">
+        <nav className="app-nav" aria-label="Workspace" data-tab={tab}>
+          <span className="nav-indicator" aria-hidden="true" />
           <button
             type="button"
             aria-current={tab === "organize" ? "page" : undefined}
@@ -160,34 +257,55 @@ export function App() {
         aria-label="Appearance"
         tabIndex={-1}
         className="header-panel"
-        hidden={control !== "appearance"}
+        inert={control !== "appearance"}
+        data-open={control === "appearance"}
       >
         <div className="appearance-fields">
-          {(["mode", "accent", "motion"] as const).map((field) => (
-            <label key={field}>
-              {
-                { mode: "Appearance", accent: "Accent", motion: "Motion" }[
-                  field
-                ]
-              }
-              <select
-                value={appearance[field]}
-                onChange={(event) => {
-                  const value = appearanceSchema.safeParse({
-                    ...appearance,
-                    [field]: event.target.value,
-                  });
-                  if (value.success) changeAppearance(value.data);
-                }}
+          <div className="appearance-title">Appearance</div>
+          <AppearanceSegments
+            label="Appearance mode"
+            value={appearance.mode}
+            motion={motionEnabled}
+            onChange={(mode) => changeAppearance({ ...appearance, mode })}
+            options={[
+              { value: "system", label: "System", icon: "system" },
+              { value: "light", label: "Light", icon: "light" },
+              { value: "dark", label: "Dark", icon: "dark" },
+            ]}
+          />
+          <span className="appearance-label">Accent color</span>
+          <div
+            className="accent-swatches"
+            role="group"
+            aria-label="Accent color"
+          >
+            {accentNames.map((accent) => (
+              <button
+                key={accent}
+                className="accent-swatch"
+                data-swatch={accent}
+                title={accent[0].toUpperCase() + accent.slice(1)}
+                aria-label={accent[0].toUpperCase() + accent.slice(1)}
+                aria-pressed={appearance.accent === accent}
+                onClick={() => changeAppearance({ ...appearance, accent })}
               >
-                {appearanceSchema.shape[field].options.map((option) => (
-                  <option key={option} value={option}>
-                    {option[0].toUpperCase() + option.slice(1)}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ))}
+                {appearance.accent === accent ? (
+                  <span aria-hidden="true">✓</span>
+                ) : null}
+              </button>
+            ))}
+          </div>
+          <span className="appearance-label motion-label">Motion</span>
+          <AppearanceSegments
+            label="Motion"
+            value={appearance.motion}
+            motion={motionEnabled}
+            onChange={(motion) => changeAppearance({ ...appearance, motion })}
+            options={[
+              { value: "system", label: "System motion", icon: "motion" },
+              { value: "reduced", label: "Reduce motion", icon: "reduced" },
+            ]}
+          />
           {storageError && (
             <p role="status">Appearance changes could not be saved.</p>
           )}
@@ -199,11 +317,13 @@ export function App() {
         aria-label="Settings"
         tabIndex={-1}
         className="header-panel"
-        hidden={control !== "settings"}
+        inert={control !== "settings"}
+        data-open={control === "settings"}
       >
         {openedSettings && (
           <InferencePanel
             provider={provider}
+            model={model.model}
             credentials={muse.credentials}
             visible={control === "settings"}
           />
@@ -214,11 +334,9 @@ export function App() {
           <DiscoveryScreen
             device={tauriDevice}
             analysis={fileAnalysis}
-            motionEnabled={
-              tab === "organize" &&
-              appearance.motion !== "reduced" &&
-              !systemReduced
-            }
+            credentials={muse.credentials}
+            onConfigure={openSettings}
+            motionEnabled={tab === "organize" && motionEnabled}
           />
         </div>
         <section

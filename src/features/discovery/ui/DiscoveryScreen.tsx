@@ -1,4 +1,6 @@
-import { DiscoveryMotion } from "../../../components/motion/DiscoveryMotion";
+import { DiscoverPopover } from "./DiscoverPopover";
+import type { CredentialSettings } from "../../inference/application/provider";
+import { gsap, useGSAP } from "../../../components/motion/engine";
 import type { FileAnalysis } from "../../file-analysis/application/workflow";
 import { FileAnalysisPanel } from "../../file-analysis/ui/FileAnalysisPanel";
 import { useEffect, useRef, useState } from "react";
@@ -9,21 +11,34 @@ export function DiscoveryScreen({
   device,
   analysis,
   motionEnabled,
+  credentials,
+  onConfigure,
 }: {
   device: DeviceAdapter;
   analysis: FileAnalysis;
   motionEnabled: boolean;
+  credentials: CredentialSettings;
+  onConfigure: () => void;
 }) {
   const [scope, setScope] = useState<DeviceScope>();
   const [review, setReview] = useState(false);
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [selecting, setSelecting] = useState(false);
-  const [clearing, setClearing] = useState(false);
   const [status, setStatus] = useState("");
+  const [reset, setReset] = useState(false);
+  const [resetController, setResetController] = useState(
+    () => new AbortController(),
+  );
+  const resetDialog = useRef<HTMLDialogElement>(null);
+  const resetButton = useRef<HTMLButtonElement>(null);
+  const chooseButton = useRef<HTMLButtonElement>(null);
+  const restoreChooseFocus = useRef(false);
+  const organize = useRef<HTMLElement>(null);
   const revision = useRef(0);
+  const [listingVersion, setListingVersion] = useState(0);
   const [listing, setListing] = useState<Discovery>();
   const [discoveredCount, setDiscoveredCount] = useState<number>();
-  const [discoveryCancelling, setDiscoveryCancelling] = useState(false);
+
   const [scanning, setScanning] = useState(false);
   const scan = useRef<AbortController | null>(null);
   const [previewing, setPreviewing] = useState(false);
@@ -91,8 +106,6 @@ export function DiscoveryScreen({
     const controller = new AbortController();
     scan.current = controller;
     discardPreview();
-    setDiscoveredCount(undefined);
-    setDiscoveryCancelling(false);
     setScanning(true);
     setStatus("Discovering files…");
     const result = await device.discover(target.scopeId, controller.signal);
@@ -117,14 +130,14 @@ export function DiscoveryScreen({
     } else {
       setReview(false);
       setListing(result.value);
+      setListingVersion((value) => value + 1);
       setDiscoveredCount(result.value.files.length);
-      const { status: outcome, files, unavailable } = result.value;
       setStatus(
-        outcome === "complete"
-          ? files.length
-            ? `Found ${files.length} files.`
-            : "No eligible files found."
-          : `Scan ${outcome}. Showing ${files.length} files. ${unavailable} unavailable.`,
+        result.value.status === "complete"
+          ? ""
+          : result.value.status === "partial"
+            ? "Some items could not be listed."
+            : "Only part of this folder could be scanned.",
       );
     }
   }
@@ -149,32 +162,81 @@ export function DiscoveryScreen({
     }
   }
 
-  async function clearFolder() {
-    if (!scope) return;
-    const request = ++revision.current;
-    scan.current?.abort();
-    discardPreview();
-    setClearing(true);
-    const result = await device.clearScope(scope.scopeId);
-    setClearing(false);
-    if (request !== revision.current) return;
-    if (result.ok || result.error === "scopeInactive") {
-      setListing(undefined);
-      setScope(undefined);
-      setDiscoveredCount(undefined);
-      setReview(false);
-      setStatus("");
-    } else {
-      setStatus("Could not clear the folder.");
+  function beginReset() {
+    resetController.abort();
+    if (scan.current) {
+      scan.current.abort();
     }
+    setReset(true);
+    setStatus("Starting over…");
   }
 
-  const step = review ? 2 : listing?.files.length ? 1 : 0;
-  const busy = selecting || clearing || scanning || previewing || analysisBusy;
+  useEffect(() => {
+    if (!reset || !scope || scanning || previewing || analysisBusy) return;
+    let current = true;
+    void device.clearScope(scope.scopeId).then((result) => {
+      if (!current) return;
+      setResetController(new AbortController());
+      setReset(false);
+      if (result.ok || result.error === "scopeInactive") {
+        revision.current++;
+        if (previewUrl.current) URL.revokeObjectURL(previewUrl.current);
+        previewUrl.current = undefined;
+        setPreview(undefined);
+        setListing(undefined);
+        setScope(undefined);
+        setDiscoveredCount(undefined);
+        setReview(false);
+        setStatus("");
+        restoreChooseFocus.current = true;
+      } else {
+        setStatus("Could not clear the folder. Try again.");
+        resetButton.current?.focus();
+      }
+    });
+    return () => {
+      current = false;
+    };
+  }, [reset, scope, scanning, previewing, analysisBusy, device]);
+
+  const step = review
+    ? 2
+    : listing?.files.length && discoveredCount === undefined
+      ? 1
+      : 0;
+  const busy = selecting || reset || scanning || previewing || analysisBusy;
+  useGSAP(
+    () => {
+      if (motionEnabled && organize.current) {
+        gsap.from(".stepper [aria-current] > span", {
+          scale: 0.84,
+          duration: 0.18,
+          ease: "power2.out",
+        });
+        gsap.from(".folder-start, .organize-body", {
+          opacity: 0.72,
+          y: 4,
+          duration: 0.2,
+          ease: "power2.out",
+        });
+      }
+    },
+    {
+      scope: organize,
+      dependencies: [step, scope, motionEnabled],
+      revertOnUpdate: true,
+    },
+  );
+  useEffect(() => {
+    if (!scope && restoreChooseFocus.current) {
+      chooseButton.current?.focus();
+      restoreChooseFocus.current = false;
+    }
+  }, [scope]);
   return (
-    <section className="organize" aria-label="Organize">
+    <section className="organize" aria-label="Organize" ref={organize}>
       <ol className="stepper" aria-label="Organize progress">
-        {["Select folder", "Analyze", "Review changes"].map((label, index) => (
+        {["Discover", "Analyze", "Organize"].map((label, index) => (
           <li
             key={label}
             aria-current={index === step ? "step" : undefined}
@@ -188,6 +250,7 @@ export function DiscoveryScreen({
       {!scope ? (
         <div className="folder-start">
           <button
+            ref={chooseButton}
             className="choose-folder primary"
             type="button"
             disabled={selecting}
@@ -202,108 +265,173 @@ export function DiscoveryScreen({
         </div>
       ) : (
         <div className="organize-body">
-          <div className="folder-toolbar">
-            <strong>{scope.label}</strong>
-            <button disabled={busy} onClick={() => void selectFolder()}>
-              Change folder
-            </button>
-            <button disabled={busy} onClick={() => void clearFolder()}>
-              Clear
-            </button>
-            <button disabled={busy} onClick={() => void discover()}>
-              {listing ? "Refresh" : "Retry discovery"}
-            </button>
-            {(scanning || previewing) && (
+          <div
+            className={`folder-toolbar folder-context${step === 0 ? " discover-folder-context" : ""}`}
+          >
+            <strong>
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+              </svg>
+              {scope.label}
+            </strong>
+            {step === 0 ? (
+              <DiscoverPopover
+                label="Folder actions"
+                motion={motionEnabled}
+                triggerRef={resetButton}
+                disabled={reset || selecting}
+                icon={
+                  <svg aria-hidden="true" viewBox="0 0 24 24">
+                    <path d="M5 12h.01m7 0h.01m7 0h.01" strokeWidth="3" />
+                  </svg>
+                }
+              >
+                <div className="folder-command-list">
+                  <button
+                    data-dismiss-popover
+                    disabled={busy}
+                    onClick={() => {
+                      void selectFolder();
+                    }}
+                  >
+                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                      <path d="M3 6h7l2 2h9v12H3Z" />
+                    </svg>
+                    Change folder
+                  </button>
+                  <button
+                    data-dismiss-popover
+                    disabled={busy}
+                    onClick={() => {
+                      void discover();
+                    }}
+                  >
+                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                      <path d="M20 11a8 8 0 1 0-2 6m2-12v6h-6" />
+                    </svg>
+                    Refresh
+                  </button>
+                  <button
+                    data-dismiss-popover
+                    onClick={() => {
+                      if (
+                        analysisBusy ||
+                        scanning ||
+                        previewing ||
+                        listing?.files.length
+                      )
+                        resetDialog.current?.showModal();
+                      else beginReset();
+                    }}
+                  >
+                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                      <path d="M4 11a8 8 0 1 1 2 6M4 5v6h6" />
+                    </svg>
+                    Start over
+                  </button>
+                </div>
+              </DiscoverPopover>
+            ) : (
+              <>
+                <button
+                  className="subtle"
+                  ref={resetButton}
+                  disabled={reset}
+                  onClick={() => {
+                    if (
+                      analysisBusy ||
+                      scanning ||
+                      previewing ||
+                      listing?.files.length
+                    )
+                      resetDialog.current?.showModal();
+                    else beginReset();
+                  }}
+                >
+                  Start over
+                </button>
+                {!busy && !listing?.files.length && (
+                  <button className="subtle" onClick={() => void discover()}>
+                    Scan again
+                  </button>
+                )}
+              </>
+            )}
+            {(scanning || previewing) && !reset && (
               <button
+                className="subtle"
                 onClick={() => {
-                  if (scanning) setDiscoveryCancelling(true);
                   scan.current?.abort();
                 }}
               >
-                {previewing ? "Cancel preview" : "Cancel scan"}
+                Cancel {previewing ? "preview" : "scan"}
               </button>
             )}
           </div>
-          {scanning || (!review && discoveredCount !== undefined) ? (
-            <DiscoveryMotion
-              pending={scanning}
-              count={discoveredCount}
-              enabled={motionEnabled && !discoveryCancelling}
-            />
-          ) : null}
-          <p role="status">{status}</p>
-          {!review && listing && discoveredCount !== undefined && (
+          <dialog
+            ref={resetDialog}
+            className="reset-dialog"
+            aria-labelledby="reset-title"
+          >
+            <h2 id="reset-title">Start over?</h2>
             <p>
-              {listing.files.length} files found · {listing.examined} entries
-              examined · {listing.unavailable} unavailable
+              {analysisBusy || scanning || previewing
+                ? "Current work will be cancelled and this folder cleared."
+                : "This clears the selected folder and its draft results."}
+            </p>
+            <div className="folder-toolbar">
+              <button autoFocus onClick={() => resetDialog.current?.close()}>
+                Keep working
+              </button>
+              <button
+                className="primary"
+                onClick={() => {
+                  resetDialog.current?.close();
+                  beginReset();
+                }}
+              >
+                Start over
+              </button>
+            </div>
+          </dialog>
+          {(status || reset) && (
+            <p className="folder-status" role="status">
+              {reset ? "Starting over…" : status}
             </p>
           )}
-          {!review && preview && (
-            <img
-              src={preview.url}
-              alt={`Thumbnail of ${preview.name}`}
-              onLoad={() => setStatus("Preview ready.")}
-              onError={() => {
-                discardPreview();
-                setStatus("Could not display the generated preview.");
-              }}
-            />
+          {!scanning && listing?.files.length === 0 && (
+            <p>No files discovered.</p>
           )}
           {scope && listing && listing.files.length > 0 && (
             <FileAnalysisPanel
-              key={listing.files[0].fileId}
+              key={listingVersion}
               analysis={analysis}
+              credentials={credentials}
+              onConfigure={onConfigure}
               scope={scope.scopeId}
               files={listing.files}
-              deviceBusy={selecting || clearing || scanning || previewing}
+              deviceBusy={selecting || reset || scanning || previewing}
               review={review}
               onReview={setReview}
               onBusy={setAnalysisBusy}
+              resetSignal={resetController.signal}
               motionEnabled={motionEnabled}
               onAnalysisStarted={() => setDiscoveredCount(undefined)}
+              discovering={discoveredCount !== undefined}
+              onDiscover={() => setDiscoveredCount(listing.files.length)}
               folder={scope.label}
               onPreview={requestPreview}
               preview={preview}
-              onPreviewLoad={() => setStatus("Preview ready.")}
+              onPreviewLoad={() =>
+                setStatus((current) =>
+                  current === "Loading generated preview…" ? "" : current,
+                )
+              }
               onPreviewError={() => {
                 discardPreview();
                 setStatus("Could not display the generated preview.");
               }}
             />
-          )}
-          {!review && listing && listing.files.length > 0 && (
-            <details>
-              <summary>Discovered files and thumbnails</summary>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Size in bytes</th>
-                    <th>Preview</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {listing.files.map((file) => (
-                    <tr key={file.fileId}>
-                      <td>{file.displayName}</td>
-                      <td>{file.sizeBytes ?? "Unknown"}</td>
-                      <td>
-                        {/^(png|jpe?g)$/i.test(file.extension ?? "") && (
-                          <button
-                            disabled={busy}
-                            onClick={() =>
-                              requestPreview(file.fileId, file.displayName)
-                            }
-                          >
-                            Preview
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </details>
           )}
         </div>
       )}

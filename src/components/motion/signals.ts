@@ -1,9 +1,12 @@
+import type { FileKind } from "./Artwork";
+
 export const glyphCapacity = 8;
 export const categoryCapacity = 5;
 
-export type MotionSignal =
+export type MotionSignal = (
   | { kind: "processing" | "failed" | "skipped" | "cancelled" | "uncertain" }
-  | { kind: "classified"; category: string };
+  | { kind: "classified"; category: string }
+) & { fileKind?: FileKind };
 
 export function createMotionFeed() {
   let listener: ((id: string, signal: MotionSignal) => void) | undefined;

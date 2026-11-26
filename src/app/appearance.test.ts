@@ -10,7 +10,7 @@ test("persists appearance, accent, and reduced motion independently", () => {
   expect(loadAppearance(storage)).toEqual(defaults);
   const updated = {
     ...defaults,
-    accent: "sage",
+    accent: "emerald",
     mode: "dark",
     motion: "reduced",
   } as const;
@@ -35,4 +35,13 @@ test("handles inaccessible storage", () => {
   };
   expect(loadAppearance({ getItem: unavailable })).toEqual(defaults);
   expect(saveAppearance({ setItem: unavailable }, defaults)).toBe(false);
+});
+
+test("migrates legacy accents while preserving appearance and motion", () => {
+  expect(
+    loadAppearance({
+      getItem: () =>
+        '{"version":1,"mode":"light","accent":"ocean","motion":"reduced"}',
+    }),
+  ).toEqual({ version: 2, mode: "light", accent: "blue", motion: "reduced" });
 });

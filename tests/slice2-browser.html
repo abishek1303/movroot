@@ -21,10 +21,17 @@
         fileId: "file-test",
         displayName: "leaf.txt",
         extension: "txt",
+        sizeBytes: 245,
       };
-      const extras = Array.from({ length: 70 }, (_, i) => ({
+      const sampleFormats = ["jpg", "pdf", "mp4", "mp3", "zip", "csv", "bin"];
+      const extras = Array.from({ length: 499 }, (_, i) => ({
         fileId: "extra-" + i,
-        displayName: "other-" + i + ".txt",
+        displayName:
+          i === 0
+            ? "photo.jpg"
+            : "other-" + i + "." + (sampleFormats[i] ?? "txt"),
+        extension: sampleFormats[i] ?? "txt",
+        sizeBytes: (i + 1) * 4096,
       }));
       const result = {
         presentation: "document",
@@ -39,13 +46,36 @@
         sensitivity: [],
         uncertainty: [],
       };
+      const preparedSelections = [];
+      const successfulReply = {
+        dispatched: true,
+        error: null,
+        reply: {
+          httpStatus: 200,
+          body: JSON.stringify({
+            model: "muse-ember-1.0",
+            status: "completed",
+            usage: { input_tokens: 200, output_tokens: 40 },
+            output: [
+              {
+                type: "message",
+                role: "assistant",
+                content: [
+                  { type: "output_text", text: JSON.stringify(result) },
+                ],
+              },
+            ],
+          }),
+        },
+      };
       let allow = false;
+      let credential = "environment";
       const hold = (name) =>
         new Promise((resolve) => {
           pending[name] = resolve;
         });
       window.__TAURI_INTERNALS__ = {
-        invoke: async (command) => {
+        invoke: async (command, payload) => {
           calls.push(command);
           switch (command) {
             case "select_device_scope":
@@ -62,17 +92,60 @@
             case "muse_ember_key_status":
               return {
                 sessionId: "c7b199e7-e40b-4159-b13d-b10979ad60cf",
-                source: "environment",
+                source: credential,
                 remainingDispatches: 20,
               };
             case "prepare_file_analysis":
+              preparedSelections.push(payload.request.fileIds);
               return hold("check");
             case "approve_file_analysis":
               return allow;
+            case "set_muse_ember_key":
+              if (credential === "environment")
+                throw Error("Shadowed credential edit");
+              credential = "secureStore";
+              return undefined;
+            case "remove_muse_ember_key":
+              credential = "missing";
+              return undefined;
+            case "read_device_file":
+              return Uint8Array.from(
+                atob(
+                  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGMIWvUBAAM+Ae34447YAAAAAElFTkSuQmCC",
+                ),
+                (byte) => byte.charCodeAt(0),
+              ).buffer;
+            case "clear_device_scope":
+
             case "cancel_device_operation":
             case "cancel_muse_ember_inference":
             case "discard_file_analysis":
               return undefined;
+            case "infer_muse_ember":
+              return {
+                httpStatus: 200,
+                body: JSON.stringify({
+                  model: "muse-ember-1.0",
+                  status: "completed",
+                  output: [
+                    {
+                      type: "message",
+                      role: "assistant",
+                      content: [
+                        {
+                          type: "output_text",
+                          text: JSON.stringify({
+                            summary: "A test",
+                            category: "document",
+                            tags: ["sample"],
+                            uncertainty: [],
+                          }),
+                        },
+                      ],
+                    },
+                  ],
+                }),
+              };
             case "infer_muse_ember_file":
               return hold("infer");
             default:
@@ -105,15 +178,39 @@
           if (check()) return;
           await new Promise((resolve) => setTimeout(resolve, 15));
         }
-        throw new Error("Timed out");
+        throw new Error(`Timed out waiting for ${check.toString()}`);
       };
+      const hasControl = (label) =>
+        Boolean(
+          document.querySelector(
+            `#settings-panel[data-open="true"] button[aria-label="${label}"]`,
+          ),
+        );
       const click = (label) => {
         const button = [...document.querySelectorAll("button")].find(
           (b) =>
             !b.disabled &&
-            !b.closest("[hidden]") &&
-            b.textContent.trim() === label,
+            !b.closest("[hidden], [inert]") &&
+            b.getClientRects().length > 0 &&
+            (b.getAttribute("aria-label") === label ||
+              [...b.childNodes]
+                .filter(
+                  (node) =>
+                    !(node instanceof Element) ||
+                    node.getAttribute("aria-hidden") !== "true",
+                )
+                .map((node) => node.textContent)
+                .join("")
+                .trim() === label),
         );
+        if (!button && (label === "Start over" || label === "Refresh")) {
+          click("Folder actions");
+          return wait(() =>
+            document.querySelector(
+              '[role="dialog"][aria-label="Folder actions"]',
+            ),
+          ).then(() => click(label));
+        }
         if (!button) throw new Error("Missing " + label);
         button.click();
       };
@@ -127,21 +224,84 @@
         await wait(() => visible("No operations yet"));
         click("Organize");
       };
+      async function capture(name) {
+        if (!new URLSearchParams(location.search).has("capture")) return;
+        if (name !== "analysis")
+          await new Promise((resolve) => setTimeout(resolve, 480));
+        document.body.dataset.capture = name;
+        await new Promise((resolve) => setTimeout(resolve, 650));
+        delete document.body.dataset.capture;
+      }
       async function run() {
         try {
           await wait(() => visible("Choose folder"));
+          await capture("initial");
+          if (new URLSearchParams(location.search).has("capture")) {
+            click("Choose folder");
+            await wait(() => pending.scan);
+            pending.scan({
+              status: "complete",
+              files: [
+                {
+                  fileId: "sample-image",
+                  displayName: "photo.jpg",
+                  extension: "jpg",
+                },
+                {
+                  fileId: "sample-pdf",
+                  displayName: "receipt.pdf",
+                  extension: "pdf",
+                },
+                file,
+                {
+                  fileId: "sample-second-image",
+                  displayName: "screenshot.png",
+                  extension: "png",
+                },
+              ],
+              examined: 4,
+              unavailable: 0,
+            });
+            await wait(
+              () =>
+                visible("4 files discovered") &&
+                document.querySelectorAll(".browser-row input:checked")
+                  .length === 4,
+            );
+            const readyActions = document
+              .querySelector(".discover-actions")
+              .getBoundingClientRect();
+            const readyFiles = document
+              .querySelector(".discover-stage .review-scroll")
+              .getBoundingClientRect();
+            requireState(
+              readyActions.bottom <= innerHeight + 2 &&
+                readyFiles.bottom <= readyActions.top,
+              `Discover ready layout: actions ${readyActions.top}–${readyActions.bottom}, files end ${readyFiles.bottom}, viewport ${innerHeight}`,
+            );
+            await capture("ready");
+            const appearanceTrigger = document.querySelector(
+              'button[aria-label="Appearance"]',
+            );
+            appearanceTrigger.click();
+            await wait(() => document.activeElement.id === "appearance-panel");
+            await capture("appearance");
+            document.activeElement.dispatchEvent(
+              new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+            );
+            await wait(
+              () => appearanceTrigger.getAttribute("aria-expanded") === "false",
+            );
+            await click("Start over");
+            await wait(() => document.querySelector("dialog[open]"));
+            document.querySelector("dialog .primary").click();
+            await wait(() => visible("Choose folder"));
+            delete pending.scan;
+          }
           click("Choose folder");
           await wait(() => pending.scan);
-          await wait(() => document.querySelector(".discovery-indicator"));
-          requireState(
-            !document.querySelector(".discovered-file"),
-            "Pending scan invented files",
-          );
           click("History");
           await wait(() => visible("No operations yet"));
-          await wait(
-            () => !document.querySelector(".discovery-indicator").style.opacity,
-          );
           pending.scan({
             status: "complete",
             files: [],
@@ -149,19 +309,12 @@
             unavailable: 0,
           });
           click("Organize");
-          await wait(() => visible("No eligible files found"));
-          requireState(
-            !document.querySelector(".discovered-file"),
-            "Empty scan invented files",
-          );
+          await wait(() => visible("No files discovered"));
 
           delete pending.scan;
-          click("Refresh");
+          await click("Refresh");
           await wait(() => pending.scan);
           click("Cancel scan");
-          await wait(
-            () => !document.querySelector(".discovery-indicator").style.opacity,
-          );
           pending.scan({
             status: "cancelled",
             files: [],
@@ -169,40 +322,129 @@
             unavailable: 0,
           });
           await wait(() => visible("Discovery cancelled"));
-          requireState(
-            !document.querySelector(".discovered-file"),
-            "Cancelled scan invented files",
-          );
 
           delete pending.scan;
-          click("Refresh");
+          await click("Refresh");
           await wait(() => pending.scan);
           pending.scan({
             status: "partial",
             files: [file, ...extras],
-            examined: 72,
+            examined: 501,
             unavailable: 1,
           });
-          await wait(() => visible("Files to analyze"));
+          await wait(() =>
+            document.querySelector('button[aria-label="Analysis options"]'),
+          );
           requireState(
-            visible("Scan partial"),
+            !visible("Session budget") &&
+              !document.querySelector(".discover-stage .workflow-dock"),
+            "Discover showed advanced settings or a dock by default",
+          );
+          click("Analysis options");
+          await wait(() => visible("Session budget"));
+          document.activeElement.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+          );
+          await wait(
+            () =>
+              document.activeElement.getAttribute("aria-label") ===
+                "Analysis options" && !visible("Session budget"),
+          );
+          requireState(
+            visible("Some items could not be listed"),
             "Partial scan outcome was lost",
           );
           requireState(
-            document.querySelectorAll(".discovered-file").length === 5,
-            "Discovery did not cap representative glyphs",
+            document.querySelectorAll(".browser-row").length === 80,
+            "Large listings did not cap the rendered rows",
+          );
+          requireState(
+            document.querySelectorAll(".distribution-groups button").length ===
+              6 && visible("More groups"),
+            "Format groups were not bounded",
+          );
+          click("Next");
+          await wait(() => visible("other-79.txt"));
+          requireState(
+            document.querySelectorAll(".browser-row").length === 80,
+            "Paging changed the row budget",
+          );
+          click("Previous");
+          await wait(() =>
+            document
+              .querySelector(".browser-row")
+              ?.textContent.includes("leaf.txt"),
+          );
+          const dockBounds = document
+            .querySelector(".discover-actions")
+            .getBoundingClientRect();
+          requireState(
+            dockBounds.bottom <= window.innerHeight + 2,
+            "The action dock was clipped",
+          );
+
+          document
+            .querySelector(
+              '.distribution[aria-label="File types"] button[data-tone="image"]',
+            )
+            .click();
+          await wait(
+            () => document.querySelectorAll(".browser-row").length === 1,
+          );
+          click("photo.jpg");
+          await wait(() => visible("Preview image"));
+          click("Preview image");
+          await wait(
+            () =>
+              document.querySelector(".browser-inspection img")
+                ?.naturalWidth === 1,
+          );
+          click("photo.jpg");
+
+          document
+            .querySelector(
+              '.distribution[aria-label="File types"] button[data-tone="image"]',
+            )
+            .click();
+          await wait(
+            () => document.querySelectorAll(".browser-row").length === 80,
           );
           requireState(
             !calls.includes("prepare_file_analysis"),
             "Discovery started preparation",
           );
           document.querySelector("input[type=checkbox]").click();
-          click("Check selected files");
+          await wait(
+            () =>
+              document.querySelectorAll(".browser-row input:checked").length ===
+              1,
+          );
+          credential = "missing";
+          click("Analyze");
+          await wait(() => visible("Configure API key"));
+          requireState(
+            !calls.includes("prepare_file_analysis") &&
+              !calls.includes("approve_file_analysis") &&
+              !calls.includes("infer_muse_ember_file"),
+            "Missing key reached preparation, approval, or dispatch",
+          );
+          await capture("missing-key");
+          click("Configure API key");
+          await wait(() => hasControl("Add key"));
+          document.activeElement.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+          );
+          await wait(
+            () =>
+              document
+                .querySelector('button[aria-label="Settings"]')
+                .getAttribute("aria-expanded") === "false",
+          );
+          credential = "environment";
+          click("Try again");
           await wait(() => pending.check);
           await flip();
           pending.check(manifest);
-          await wait(() => visible("Start analysis"));
-          click("Start analysis");
           await wait(() => visible("Transmission cancelled"));
           requireState(
             !calls.includes("infer_muse_ember_file"),
@@ -210,18 +452,16 @@
           );
           allow = true;
           delete pending.check;
-          click("Check selected files");
+          click("Analyze");
           await wait(() => pending.check);
           pending.check(manifest);
-          await wait(() => visible("Start analysis"));
-          click("Start analysis");
           await wait(() => pending.infer);
           const activeGlyph = () =>
             [...document.querySelectorAll("[data-motion-glyph]")].some(
               (glyph) => Number(getComputedStyle(glyph).opacity) > 0,
             );
-          await wait(activeGlyph);
-          click("Cancel");
+          await wait(() => visible("Analyzing files"));
+          click("Cancel analysis");
           await wait(() => !activeGlyph());
           pending.infer({
             dispatched: false,
@@ -242,47 +482,53 @@
             ...manifest.items[0],
             fileId: extras[0].fileId,
             name: extras[0].displayName,
+            extension: "jpg",
+            format: "jpeg",
+            coverage: {
+              kind: "image",
+              original: [48, 48],
+              transmitted: [48, 48],
+              resized: false,
+              orientationApplied: false,
+              sourceBytes: 200,
+              transmittedBytes: 180,
+            },
           };
-          document.querySelectorAll(".file-selection input")[1].click();
-          await wait(() => visible("2 selected"));
-          click("Check selected files");
+          click("Back to Discover");
+          await wait(
+            () => document.querySelectorAll(".browser-files input").length > 1,
+          );
+          document.querySelectorAll(".browser-files input")[1].click();
+          await wait(
+            () =>
+              document.querySelectorAll(".browser-row input:checked").length ===
+              2,
+          );
+          click("Analyze");
           await wait(() => pending.check);
           pending.check({ ...manifest, items: [...manifest.items, second] });
-          await wait(() => visible("Start analysis"));
-          click("Start analysis");
           await wait(() => pending.infer);
-          await wait(activeGlyph);
-          pending.infer({
-            dispatched: true,
-            error: null,
-            reply: {
-              httpStatus: 200,
-              body: JSON.stringify({
-                model: "muse-ember-1.0",
-                status: "completed",
-                usage: { input_tokens: 200, output_tokens: 40 },
-                output: [
-                  {
-                    type: "message",
-                    role: "assistant",
-                    content: [
-                      { type: "output_text", text: JSON.stringify(result) },
-                    ],
-                  },
-                ],
-              }),
-            },
-          });
+          await wait(() => visible("Analyzing files"));
+          pending.infer(successfulReply);
           const firstResponse = pending.infer;
           await wait(() => pending.infer !== firstResponse);
           await wait(() =>
-            document.querySelector('[data-motion-destination="Documents"]'),
+            document.querySelector(
+              '.distribution[aria-label="Semantic categories"] button',
+            ),
           );
-          if (new URLSearchParams(location.search).has("capture")) {
-            document.body.dataset.capture = "analysis";
-            await new Promise((resolve) => setTimeout(resolve, 900));
-            delete document.body.dataset.capture;
-          }
+          const category = document.querySelector(
+            '.distribution[aria-label="Semantic categories"] button',
+          );
+          category.click();
+          await wait(
+            () => document.querySelectorAll(".browser-row").length === 1,
+          );
+          category.click();
+          await wait(
+            () => document.querySelectorAll(".browser-row").length === 2,
+          );
+          await capture("analysis");
           const cancelsBeforeNavigation = calls.filter((command) =>
             command.startsWith("cancel_"),
           ).length;
@@ -290,14 +536,31 @@
           await wait(() => visible("No operations yet"));
           requireState(!activeGlyph(), "History left an animated glyph active");
           click("Organize");
-          const change = (label, value) => {
-            const select = [
-              ...document.querySelectorAll(".appearance-fields label"),
-            ]
-              .find((el) => el.firstChild.textContent === label)
-              .querySelector("select");
-            select.value = value;
-            select.dispatchEvent(new Event("change", { bubbles: true }));
+          const names = {
+            light: "Light",
+            dark: "Dark",
+            system: "System motion",
+            reduced: "Reduce motion",
+          };
+          await wait(() => {
+            const marker = document
+              .querySelector(".nav-indicator")
+              .getBoundingClientRect();
+            const active = document
+              .querySelector(".app-nav [aria-current]")
+              .getBoundingClientRect();
+            return Math.abs(marker.left - active.left) < 2;
+          });
+          const change = (_label, value) => {
+            const name =
+              names[value] ?? value[0].toUpperCase() + value.slice(1);
+            document
+              .querySelector(`#appearance-panel button[aria-label="${name}"]`)
+              ?.click();
+            const button = [
+              ...document.querySelectorAll("#appearance-panel button"),
+            ].find((item) => item.textContent.trim() === name);
+            if (button) button.click();
           };
           const escape = () =>
             document.activeElement.dispatchEvent(
@@ -327,12 +590,12 @@
             change("Appearance", mode);
             await wait(() => shell.dataset.mode === mode);
             for (const accent of [
-              "lavender",
-              "sage",
-              "ocean",
-              "amber",
-              "rose",
-              "graphite",
+              "violet",
+              "emerald",
+              "blue",
+              "orange",
+              "pink",
+              "cyan",
             ]) {
               change("Accent", accent);
               await wait(() => shell.dataset.accent === accent);
@@ -343,7 +606,11 @@
                 return lum(color);
               };
               requireState(
-                contrast(paint("--accent"), paint("--accent-ink")) >= 4.5,
+                contrast(paint("--action"), paint("--accent-ink")) >= 4.5 &&
+                  contrast(paint("--action-hover"), paint("--accent-ink")) >=
+                    4.5 &&
+                  contrast(paint("--action-pressed"), paint("--accent-ink")) >=
+                    4.5,
                 "Accent text contrast " + mode + accent,
               );
               requireState(
@@ -369,7 +636,7 @@
           );
           requireState(
             JSON.parse(localStorage.getItem("movroot.appearance")).accent ===
-              "graphite",
+              "cyan",
             "Preferences were not stored",
           );
           escape();
@@ -381,7 +648,7 @@
           document.querySelector('button[aria-label="Settings"]').click();
           await wait(() => document.activeElement.id === "settings-panel");
           requireState(
-            visible("Meta provider"),
+            visible("Meta Model API"),
             "Settings did not reveal provider",
           );
           requireState(
@@ -404,34 +671,60 @@
             reply: null,
             error: { code: "invalidResponse" },
           });
-          await wait(() => visible("2 of 2 processed") && visible("1 failed"));
+          await wait(
+            () =>
+              visible("1 of 2 analyzed") &&
+              visible("1 failed") &&
+              visible("Analysis partially complete"),
+          );
+          requireState(
+            !document.querySelector(".analysis-progress progress"),
+            "Settled failure still appeared as a full progress bar",
+          );
+          requireState(
+            visible("Retry remaining files"),
+            "Partial failure offered no retry",
+          );
           requireState(
             !activeGlyph(),
             "Reduced motion animated a failed attempt",
           );
           requireState(
-            visible("Reserved $0.002912000") &&
-              !visible("Estimated session usage $0.000000000"),
+            visible("Reserved $0.003") &&
+              visible("Estimated session cost < $0.001"),
             "Visual state affected reported usage",
           );
           requireState(
-            document.querySelectorAll("[data-motion-glyph]").length === 8,
+            document.querySelectorAll("[data-motion-glyph]").length === 0,
             "Repeated runs grew the glyph pool",
           );
+          allow = false;
+          delete pending.check;
+          click("Retry remaining files");
+          await wait(() => pending.check);
+          requireState(
+            preparedSelections.at(-1).length === 1 &&
+              preparedSelections.at(-1)[0] === extras[0].fileId,
+            "Retry repeated a successful file",
+          );
+          pending.check({ ...manifest, items: [second] });
+          await wait(() => visible("Transmission cancelled"));
+          allow = true;
           document.querySelector('button[aria-label="Appearance"]').click();
           await wait(() => document.activeElement.id === "appearance-panel");
           change("Motion", "system");
           await wait(() => shell.dataset.motion === "system");
           escape();
-          click("Review changes");
+          click("Continue to Organize");
           const reviewPanel = () =>
             document.querySelector(
               '[data-flip-id="analysis-review"][tabindex]',
             );
-          await wait(() => reviewPanel()?.style.transform);
-          await wait(() => !reviewPanel()?.style.transform);
+          await wait(() => reviewPanel() && !reviewPanel().style.transform);
           await wait(() => visible("Documents"));
-          const region = document.querySelector(".review-scroll");
+          const region = document.querySelector(
+            ".review-preview .review-scroll",
+          );
           requireState(
             region.scrollHeight > region.clientHeight,
             "Long review did not scroll",
@@ -440,7 +733,7 @@
           requireState(region.scrollTop > 0, "Tree scroll was blocked");
           region.scrollTop = 0;
           const folder = [...region.querySelectorAll("summary")].find(
-            (summary) => summary.textContent === "Documents",
+            (summary) => summary.textContent.trim().startsWith("Documents"),
           );
           folder.focus();
           folder.click();
@@ -483,15 +776,188 @@
               (b) => b.textContent === "renamed.txt",
             ),
           );
-          click("Current");
-          await wait(
-            () =>
-              !region.innerText.includes("Documents") && visible("leaf.txt"),
+          requireState(
+            !document.querySelector(".view-switch"),
+            "The separate Current view survived",
           );
+          await capture("review");
+          if (new URLSearchParams(location.search).has("reset")) {
+            const reset = async () => {
+              await click("Start over");
+              await wait(() => document.querySelector("dialog[open]"));
+              document.querySelector("dialog .primary").click();
+            };
+            await reset();
+            await wait(() => visible("Choose folder"));
+            requireState(
+              document.activeElement.textContent.includes("Choose folder"),
+              "Reset did not return focus",
+            );
+            requireState(
+              !visible("renamed.txt"),
+              "Reset kept stale draft results",
+            );
+            const openScan = async () => {
+              delete pending.scan;
+              click("Choose folder");
+              await wait(() => pending.scan);
+            };
+            const discoverOne = async () => {
+              await openScan();
+              pending.scan({
+                status: "complete",
+                files: [file],
+                examined: 1,
+                unavailable: 0,
+              });
+              await wait(
+                () =>
+                  visible("1 file discovered") &&
+                  document.querySelectorAll(".browser-row input:checked")
+                    .length === 1,
+              );
+            };
+            await openScan();
+            await reset();
+            pending.scan({
+              status: "cancelled",
+              files: [],
+              examined: 0,
+              unavailable: 0,
+            });
+            await wait(() => visible("Choose folder"));
+            await discoverOne();
+            delete pending.check;
+            click("Analyze");
+            await wait(() => pending.check);
+            await reset();
+            pending.check(manifest);
+            await wait(() => visible("Choose folder"));
+            await discoverOne();
+            delete pending.check;
+            delete pending.infer;
+            click("Analyze");
+            await wait(() => pending.check);
+            pending.check(manifest);
+            await wait(() => pending.infer);
+            await reset();
+            requireState(
+              !visible("Choose folder"),
+              "Reset did not allow inference to settle",
+            );
+            pending.infer({
+              dispatched: true,
+              reply: null,
+              error: { code: "cancelled" },
+            });
+            await wait(() => visible("Choose folder"));
+            await discoverOne();
+            click("Analysis options");
+            await wait(() => visible("Session budget"));
+            document
+              .querySelectorAll(".organize-body details")
+              .forEach((element) => {
+                if (
+                  element
+                    .querySelector("summary")
+                    .textContent.startsWith("Session usage and estimates")
+                )
+                  element.open = true;
+              });
+            requireState(
+              visible("$0.005824000"),
+              "Reset lost dispatched reservations",
+            );
+
+            click("Analysis options");
+            delete pending.check;
+            delete pending.infer;
+            click("Analyze");
+            await wait(() => pending.check);
+            pending.check(manifest);
+            await wait(() => pending.infer);
+            pending.infer(successfulReply);
+            await wait(
+              () => visible("Analysis complete") && visible("1 of 1 analyzed"),
+            );
+            requireState(
+              !activeGlyph() &&
+                !document.querySelector(".analysis-progress progress"),
+              "Completed analysis kept playing",
+            );
+            await capture("complete");
+
+            const settings = document.querySelector(
+              'button[aria-label="Settings"]',
+            );
+            settings.click();
+            await wait(() => visible("Configured · unchecked"));
+            requireState(
+              !hasControl("Edit key"),
+              "Environment credential could be shadowed",
+            );
+            escape();
+            await wait(
+              () => settings.getAttribute("aria-expanded") === "false",
+            );
+            credential = "missing";
+            settings.click();
+            await wait(
+              () => visible("No API key configured") && hasControl("Add key"),
+            );
+            click("Add key");
+            await wait(() => document.querySelector(".credential-form input"));
+            document.querySelector(".credential-form input").value =
+              "fixture-key";
+            click("Show key");
+            await wait(
+              () =>
+                document.querySelector(".credential-form input").type ===
+                "text",
+            );
+            requireState(
+              document.querySelector(".credential-form input").value ===
+                "fixture-key",
+              "Revealing the draft lost it",
+            );
+            click("Hide key");
+            await wait(
+              () =>
+                document.querySelector(".credential-form input").type ===
+                "password",
+            );
+            click("Save key");
+            await wait(() => hasControl("Edit key"));
+            requireState(
+              !visible("Healthy"),
+              "Saved key was treated as verified",
+            );
+            click("Refresh connection health");
+            await wait(() => visible("Run check"));
+            requireState(
+              !calls.includes("infer_muse_ember"),
+              "Refreshing status dispatched without confirmation",
+            );
+            click("Run check");
+            await wait(() => visible("Healthy · last check passed"));
+            click("Edit key");
+            await wait(() => document.querySelector(".credential-form input"));
+            document.querySelector(".credential-form input").value =
+              "replacement-fixture-key";
+            click("Save key");
+            await wait(() => hasControl("Edit key"));
+            click("Remove key");
+            await wait(
+              () =>
+                hasControl("Add key") &&
+                calls.includes("remove_muse_ember_key"),
+            );
+          }
           document.body.dataset.verification = "passed";
           document.title = "PASS · Movroot desktop";
         } catch (error) {
-          document.body.dataset.verification = error.stack;
+          document.body.dataset.verification =
+            error.message + "\n" + error.stack;
           document.title = "FAIL · " + error.message;
         }
       }
