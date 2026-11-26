@@ -7,11 +7,17 @@ import type {
   Failure,
   InferenceMetrics,
 } from "../../inference/application/contracts";
-import type { Manifest, Ready, SemanticFileAnalysis } from "./contracts";
+import type {
+  ImageMode,
+  Manifest,
+  Ready,
+  SemanticFileAnalysis,
+} from "./contracts";
 
 export const fileAnalysisPolicy = {
   selection: 5,
   reserve: 2_912_000,
+  pdfReserve: 6_000_000,
   defaultBudget: 10_000_000,
 };
 
@@ -25,6 +31,7 @@ export interface FileAnalysisPort {
     scope: ScopeId,
     files: FileId[],
     signal: AbortSignal,
+    imageMode?: ImageMode,
   ): Promise<{ manifest: Manifest } | { error: DeviceError }>;
   approve(plan: string): Promise<boolean>;
   discard(plan: string): Promise<void>;
@@ -74,10 +81,11 @@ export function createFileAnalysis(port: FileAnalysisPort) {
             });
             continue;
           }
-          if (
-            totals.estimated + totals.reserved + fileAnalysisPolicy.reserve >
-            budget
-          ) {
+          const reserve =
+            item.format === "pdf"
+              ? fileAnalysisPolicy.pdfReserve
+              : fileAnalysisPolicy.reserve;
+          if (totals.estimated + totals.reserved + reserve > budget) {
             stop =
               totals.estimated >= budget
                 ? "Reported estimated spending reached the session budget."
@@ -85,7 +93,7 @@ export function createFileAnalysis(port: FileAnalysisPort) {
             update(item.fileId, { state: "skipped" });
             continue;
           }
-          totals = { ...totals, inFlight: fileAnalysisPolicy.reserve };
+          totals = { ...totals, inFlight: reserve };
           update(item.fileId, { state: "analyzing" });
           const attempt = await port.infer(plan, item.fileId, signal);
           const usage = attempt.metrics?.usage;
@@ -98,8 +106,7 @@ export function createFileAnalysis(port: FileAnalysisPort) {
             reasoning: totals.reasoning + (usage?.reasoningTokens ?? 0),
             estimated: totals.estimated + (cost?.nanodollars ?? 0),
             inFlight: 0,
-            reserved:
-              totals.reserved + (unresolved ? fileAnalysisPolicy.reserve : 0),
+            reserved: totals.reserved + (unresolved ? reserve : 0),
             unresolved:
               totals.unresolved +
               Number(unresolved && attempt.dispatch === "dispatched"),

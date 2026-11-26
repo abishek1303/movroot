@@ -43,6 +43,8 @@ const items = [first, second, third].map((fileId) => ({
     original: [100, 100] as [number, number],
     transmitted: [100, 100] as [number, number],
     resized: false,
+    orientationApplied: false,
+    sourceBytes: 140,
     transmittedBytes: 120,
   },
 }));
@@ -81,7 +83,7 @@ test("shares the exact semantic wire schema and normalizes filename proposals", 
   }
 });
 
-test("normalizes a bounded provider tag list to five displayed tags", () => {
+test("normalizes a bounded provider tag list without discarding distinct tags", () => {
   expect(
     semanticAnalysis.parse({
       ...receipt,
@@ -95,7 +97,7 @@ test("normalizes a bounded provider tag list to five displayed tags", () => {
         "Studio",
       ],
     }).tags,
-  ).toEqual(["apples", "red", "fruit", "still life", "table"]);
+  ).toEqual(["apples", "red", "fruit", "still life", "table", "studio"]);
   expect(
     semanticAnalysis.safeParse({
       ...receipt,
@@ -104,31 +106,62 @@ test("normalizes a bounded provider tag list to five displayed tags", () => {
   ).toBe(false);
 });
 
-test("normalizes the longer prose and lists returned by the live text samples", () => {
-  const value = semanticAnalysis.parse({
+test("preserves semantic prose and lists that exceed presentation preview lengths", () => {
+  const prose = "Grounded semantic detail. ".repeat(20).trim();
+  const list = Array.from({ length: 12 }, (_, index) => `${index} ${prose}`);
+  const payload = {
     ...receipt,
-    summary: "Project notes and next steps. ".repeat(14),
-    observations: Array.from({ length: 5 }, () =>
-      "The field guide is designed for offline use. ".repeat(5),
-    ),
-    entities: [
-      "Kestrel",
-      "Map labels",
-      "Field guide",
-      "Specimen cards",
-      "Prototype",
-    ],
+    semanticType: prose,
+    summary: prose,
+    topic: prose,
+    likelyPurpose: prose,
+    observations: list,
+    tags: list,
+    entities: list,
+    uncertainty: list,
+  };
+  expect(semanticAnalysis.parse(payload)).toEqual({
+    ...payload,
+    tags: list.map((tag) => tag.toLowerCase()),
+    suggestedStem: "Grocery receipt",
   });
-  expect(value.summary.length).toBeLessThanOrEqual(240);
-  expect(value.summary.endsWith("…")).toBe(true);
-  expect(value.observations).toHaveLength(3);
-  expect(
-    value.observations.every((observation) => observation.length <= 100),
-  ).toBe(true);
-  expect(value.entities).toHaveLength(4);
-  expect(
-    semanticAnalysis.safeParse({ ...receipt, observations: [1] }).success,
-  ).toBe(false);
+});
+
+test("reports processing limits for all prose fields and lists", () => {
+  const oversized = "a".repeat(2049);
+  for (const key of ["semanticType", "summary", "topic", "likelyPurpose"]) {
+    const result = semanticAnalysis.safeParse({ ...receipt, [key]: oversized });
+    expect(result.error?.issues[0]).toMatchObject({
+      path: [key],
+      code: "too_big",
+    });
+  }
+  for (const key of [
+    "observations",
+    "tags",
+    "entities",
+    "uncertainty",
+    "sensitivity",
+  ]) {
+    const result = semanticAnalysis.safeParse({
+      ...receipt,
+      [key]: Array(33).fill(key === "sensitivity" ? "financial" : "detail"),
+    });
+    expect(result.error?.issues[0]).toMatchObject({
+      path: [key],
+      code: "too_big",
+    });
+  }
+  for (const key of ["observations", "tags", "entities", "uncertainty"]) {
+    const result = semanticAnalysis.safeParse({
+      ...receipt,
+      [key]: [oversized],
+    });
+    expect(result.error?.issues[0]).toMatchObject({
+      path: [key, 0],
+      code: "too_big",
+    });
+  }
 });
 
 test("preserves complete safety caveats and still rejects structural errors", () => {
@@ -361,5 +394,45 @@ test("fake IPC takes a scoped file from local review to a priced semantic result
     estimated: 40_000,
     reasoning: 10,
     reserved: 0,
+  });
+});
+
+test("uses the higher PDF reservation and retains it for unknown usage", async () => {
+  const document = {
+    ...items[0],
+    name: "sample.pdf",
+    format: "pdf" as const,
+    coverage: { kind: "original" as const, sourceBytes: 784, dimensions: null },
+  };
+  const infer = vi.fn<FileAnalysisPort["infer"]>().mockResolvedValue({
+    dispatch: "dispatched",
+    error: { code: "requestRejected" },
+  });
+  const analysis = createFileAnalysis({
+    prepare: vi.fn(),
+    approve: vi.fn(),
+    discard: vi.fn(),
+    infer,
+  });
+  await analysis.run(
+    "plan",
+    [document],
+    5_999_999,
+    new AbortController().signal,
+    vi.fn(),
+  );
+  expect(infer).not.toHaveBeenCalled();
+  await analysis.run(
+    "plan",
+    [document],
+    10_000_000,
+    new AbortController().signal,
+    vi.fn(),
+  );
+  expect(infer).toHaveBeenCalledTimes(1);
+  expect(analysis.usage()).toMatchObject({
+    reserved: 6_000_000,
+    inFlight: 0,
+    unresolved: 1,
   });
 });

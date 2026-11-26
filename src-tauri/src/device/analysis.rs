@@ -16,7 +16,10 @@ use uuid::Uuid;
 pub const MAX_SELECTION: usize = 5;
 pub const REVIEW_TIME: Duration = Duration::from_secs(120);
 pub const APPROVED_TIME: Duration = Duration::from_secs(300);
-pub use super::preparation::{Content, Coverage as AnalysisCoverage};
+pub use super::preparation::{
+    Content, Coverage as AnalysisCoverage, ImageMode, ORIGINAL_IMAGE_LIMIT, PDF_LIMIT,
+    Prepared as PreparedFile,
+};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -91,6 +94,7 @@ impl DeviceState {
         request: u32,
         session_id: Uuid,
         ids: Vec<Uuid>,
+        image_mode: ImageMode,
     ) -> Result<Manifest, DeviceError> {
         if ids.is_empty()
             || ids.len() > MAX_SELECTION
@@ -159,8 +163,9 @@ impl DeviceState {
                 )
                 .and_then(|bytes| {
                     preparation::prepare(
-                        &bytes,
+                        bytes,
                         &extension.to_ascii_lowercase(),
+                        image_mode,
                         &work.operation.cancelled,
                         start,
                     )
@@ -204,6 +209,10 @@ impl DeviceState {
                     return None;
                 };
                 let detail = match coverage {
+                    Coverage::Original { source_bytes, dimensions } => {
+                        let scope = if dimensions.is_none() { " PDF page coverage is uncertain." } else { "" };
+                        format!("original file, {source_bytes} bytes, including embedded metadata and any hidden content.{scope}")
+                    }
                     Coverage::Text {
                         source_bytes,
                         covered_bytes,
@@ -215,10 +224,16 @@ impl DeviceState {
                     Coverage::Image {
                         transmitted,
                         resized,
+                        orientation_applied,
                         ..
                     } => format!(
-                        "re-encoded{} image, {} × {}",
+                        "re-encoded{}{} image, {} × {}",
                         if *resized { " and resized" } else { "" },
+                        if *orientation_applied {
+                            " with orientation applied"
+                        } else {
+                            ""
+                        },
                         transmitted[0],
                         transmitted[1]
                     ),
@@ -375,6 +390,54 @@ mod tests {
     use crate::{device::Selection, inference::file};
 
     #[test]
+    fn changing_image_representation_requires_a_new_native_approval() {
+        let path = std::path::Path::new("/private/tmp")
+            .join(format!("movroot-representation-{}", Uuid::new_v4()));
+        std::fs::create_dir(&path).unwrap();
+        let bytes = include_bytes!("../../../fixtures/ingestion-experiment/apple.jpg");
+        std::fs::write(path.join("extensionless"), bytes).unwrap();
+        let state = DeviceState::default();
+        state.page_ready();
+        let Selection::Selected { scope } = state
+            .finish_picker(state.begin_picker().unwrap(), Some(path.clone()))
+            .unwrap()
+        else {
+            panic!("expected scope")
+        };
+        let scope_id = scope.scope_id.to_string();
+        let listing = serde_json::to_value(state.discover(&scope_id, 1).unwrap()).unwrap();
+        let file_id = Uuid::parse_str(listing["files"][0]["fileId"].as_str().unwrap()).unwrap();
+        let session = Uuid::new_v4();
+        let prepared = state
+            .prepare_analysis(&scope_id, 2, session, vec![file_id], ImageMode::Prepared)
+            .unwrap()
+            .plan_id;
+        assert!(
+            state
+                .open_review(prepared, session)
+                .unwrap()
+                .contains("re-encoded")
+        );
+        assert!(state.finish_review(prepared, session, true).unwrap());
+        let original = state
+            .prepare_analysis(&scope_id, 3, session, vec![file_id], ImageMode::Original)
+            .unwrap()
+            .plan_id;
+        assert!(state.claim_analysis(prepared, session, file_id).is_err());
+        assert!(state.claim_analysis(original, session, file_id).is_err());
+        assert!(
+            state
+                .open_review(original, session)
+                .unwrap()
+                .contains("including embedded metadata and any hidden content")
+        );
+        assert!(state.finish_review(original, session, true).unwrap());
+        let item = state.claim_analysis(original, session, file_id).unwrap();
+        assert!(matches!(item.prepared.content, Content::Original(original) if original == bytes));
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn fake_send_requires_exact_approved_item_and_current_listing() {
         let path = std::path::Path::new("/private/tmp")
             .join(format!("movroot-analysis-{}", Uuid::new_v4()));
@@ -393,7 +456,7 @@ mod tests {
         let file_id = Uuid::parse_str(listing["files"][0]["fileId"].as_str().unwrap()).unwrap();
         let session = Uuid::new_v4();
         let manifest = state
-            .prepare_analysis(&scope_id, 2, session, vec![file_id])
+            .prepare_analysis(&scope_id, 2, session, vec![file_id], ImageMode::Prepared)
             .unwrap();
         let id = manifest.plan_id;
         assert!(state.claim_analysis(id, session, file_id).is_err());
@@ -408,7 +471,7 @@ mod tests {
         assert!(state.claim_analysis(id, session, Uuid::new_v4()).is_err());
         let item = state.claim_analysis(id, session, file_id).unwrap();
         item.verify().unwrap();
-        let body = file::request(&item.prepared.content, "prepared fixture").unwrap();
+        let body = file::request(&item.prepared).unwrap();
         let mut sent = Vec::new();
         state
             .admit_analysis(id, session, || sent.push(body))
@@ -432,14 +495,14 @@ mod tests {
         let refreshed = serde_json::to_value(state.discover(&scope_id, 4).unwrap()).unwrap();
         let file_id = Uuid::parse_str(refreshed["files"][0]["fileId"].as_str().unwrap()).unwrap();
         let declined = state
-            .prepare_analysis(&scope_id, 5, session, vec![file_id])
+            .prepare_analysis(&scope_id, 5, session, vec![file_id], ImageMode::Prepared)
             .unwrap()
             .plan_id;
         state.open_review(declined, session).unwrap();
         assert!(!state.finish_review(declined, session, false).unwrap());
         assert!(state.claim_analysis(declined, session, file_id).is_err());
         let revoked = state
-            .prepare_analysis(&scope_id, 6, session, vec![file_id])
+            .prepare_analysis(&scope_id, 6, session, vec![file_id], ImageMode::Prepared)
             .unwrap()
             .plan_id;
         state.open_review(revoked, session).unwrap();

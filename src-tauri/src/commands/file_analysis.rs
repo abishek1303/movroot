@@ -1,7 +1,7 @@
 use crate::{
     device::{
         DeviceError, DeviceState,
-        analysis::{self, AnalysisCoverage},
+        analysis::{self, ImageMode},
     },
     inference::{Failure, State, credentials, file, transport},
 };
@@ -25,6 +25,8 @@ pub struct PrepareRequest {
     scope_id: String,
     request_id: u32,
     file_ids: Vec<Uuid>,
+    #[serde(default)]
+    image_mode: ImageMode,
 }
 
 fn expire(window: WebviewWindow, id: Uuid, delay: std::time::Duration) {
@@ -47,6 +49,7 @@ pub async fn prepare_file_analysis(
             request.request_id,
             request.session_id,
             request.file_ids,
+            request.image_mode,
         )
     })
     .await
@@ -182,18 +185,7 @@ async fn infer(
         .map_err(device_error)?;
     let revoke = item.cancel.clone();
     let (key, body) = tauri::async_runtime::spawn_blocking(move || {
-        let hint = match item.prepared.coverage {
-            AnalysisCoverage::Text {
-                source_bytes,
-                covered_bytes,
-                ..
-            } if source_bytes != covered_bytes => "The following file content is a text excerpt.",
-            AnalysisCoverage::Image { resized: true, .. } => {
-                "The following file content is a resized image."
-            }
-            _ => "The following is the prepared file content.",
-        };
-        let body = file::request(&item.prepared.content, hint)?;
+        let body = file::request(&item.prepared)?;
         let key = credentials::resolve()?
             .into_key()
             .filter(|key| credentials::valid_key(key))

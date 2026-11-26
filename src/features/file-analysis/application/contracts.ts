@@ -9,18 +9,28 @@ const dimensions = z.tuple([
   z.number().int().positive(),
   z.number().int().positive(),
 ]);
+export type ImageMode = "prepared" | "original";
 export const coverageSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("original"),
+    sourceBytes: bytes,
+    dimensions: dimensions.nullable(),
+  }),
   z.strictObject({
     kind: z.literal("text"),
     sourceBytes: bytes,
     coveredBytes: bytes,
     transmittedBytes: bytes,
+    bomRemoved: z.boolean(),
+    lineEndingsNormalized: z.boolean(),
   }),
   z.strictObject({
     kind: z.literal("image"),
     original: dimensions,
     transmitted: dimensions,
     resized: z.boolean(),
+    orientationApplied: z.boolean(),
+    sourceBytes: bytes,
     transmittedBytes: bytes,
   }),
 ]);
@@ -29,7 +39,7 @@ const statuses = z.discriminatedUnion("status", [
   z.strictObject({
     ...entry,
     status: z.literal("ready"),
-    format: z.enum(["png", "jpeg", "text", "markdown", "json", "csv"]),
+    format: z.enum(["png", "jpeg", "text", "markdown", "json", "csv", "pdf"]),
     coverage: coverageSchema,
   }),
   z.strictObject({
@@ -77,41 +87,25 @@ export const semanticShape = z.strictObject({
   uncertainty: z.array(z.string()),
 });
 
-const field = (max: number) => z.string().trim().min(1).max(max);
-// Meta's strict wire shape validates types. Bound returned prose before presentation.
-const displayField = (max: number) =>
-  field(2048).transform((value) => {
-    const characters = Array.from(value);
-    if (characters.length <= max) return value;
-    const prefix = characters.slice(0, max - 1).join("");
-    const lastWord = prefix.lastIndexOf(" ");
-    return `${lastWord >= Math.floor(max * 0.75) ? prefix.slice(0, lastWord) : prefix}…`;
-  });
-const displayList = (count: number, max: number) =>
-  z
-    .array(displayField(max))
-    .max(32)
-    .transform((values) => values.slice(0, count));
+// The wire shape checks structure. These larger bounds limit local processing.
+const prose = z.string().max(2048).trim().min(1);
+const proseList = z.array(prose).max(32);
 
 export const semanticAnalysis = semanticShape.extend({
-  semanticType: field(60),
-  summary: displayField(240),
-  observations: displayList(3, 100),
-  topic: field(80).nullable(),
-  likelyPurpose: field(100).nullable(),
-  tags: z
-    .array(field(32))
-    .max(32)
-    .transform((tags) =>
-      [...new Set(tags.map((tag) => tag.toLowerCase()))].slice(0, 5),
-    ),
-  entities: displayList(4, 60),
-  suggestedStem: z.string().nullable().transform(normalizeStem),
+  semanticType: prose,
+  summary: prose,
+  observations: proseList,
+  topic: prose.nullable(),
+  likelyPurpose: prose.nullable(),
+  tags: proseList.transform((tags) => [
+    ...new Set(tags.map((tag) => tag.toLowerCase())),
+  ]),
+  entities: proseList,
+  suggestedStem: semanticShape.shape.suggestedStem.transform(normalizeStem),
   sensitivity: semanticShape.shape.sensitivity
     .max(32)
     .transform((flags) => [...new Set(flags)]),
-  // Preserve complete caveats. The response and array bounds limit rendering work.
-  uncertainty: z.array(field(2048)).max(32),
+  uncertainty: proseList,
 });
 
 function normalizeStem(value: string | null) {
@@ -135,6 +129,8 @@ export function suggestedName(stem: string | null, file: Ready) {
 
 export function formatMismatch(file: Ready) {
   const suffix = file.extension.toLowerCase();
+  if (!suffix) return false;
+  if (file.format === "pdf") return suffix !== "pdf";
   return file.format === "png"
     ? suffix !== "png"
     : file.format === "jpeg" && suffix !== "jpg" && suffix !== "jpeg";

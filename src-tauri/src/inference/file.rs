@@ -1,5 +1,7 @@
 use super::Failure;
-use crate::device::analysis::Content;
+use crate::device::analysis::{
+    AnalysisCoverage, Content, ORIGINAL_IMAGE_LIMIT, PDF_LIMIT, PreparedFile,
+};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -49,6 +51,7 @@ struct Message<'a> {
 enum Part<'a> {
     InputText { text: &'a str },
     InputImage { image_url: String },
+    InputFile { file_data: String },
 }
 
 #[derive(Serialize)]
@@ -68,8 +71,20 @@ struct Format<'a> {
     schema: &'a Value,
 }
 
-pub fn request(content: &Content, hint: &str) -> Result<String, Failure> {
-    let part = match content {
+pub fn request(prepared: &PreparedFile) -> Result<String, Failure> {
+    let hint = match prepared.coverage {
+        AnalysisCoverage::Original { .. } => "Analyze the supplied content.",
+        AnalysisCoverage::Text {
+            source_bytes,
+            covered_bytes,
+            ..
+        } if source_bytes != covered_bytes => "The following file content is a text excerpt.",
+        AnalysisCoverage::Image { resized: true, .. } => {
+            "The following file content is a resized image."
+        }
+        _ => "The following is the prepared file content.",
+    };
+    let part = match &prepared.content {
         Content::Text(text) if !text.is_empty() && text.len() <= 16 * 1024 => {
             Part::InputText { text }
         }
@@ -80,6 +95,19 @@ pub fn request(content: &Content, hint: &str) -> Result<String, Failure> {
         {
             Part::InputImage {
                 image_url: format!("data:{mime};base64,{}", STANDARD.encode(bytes)),
+            }
+        }
+        Content::Original(bytes)
+            if !bytes.is_empty()
+                && bytes.len()
+                    <= match prepared.format {
+                        "pdf" => PDF_LIMIT,
+                        "png" | "jpeg" => ORIGINAL_IMAGE_LIMIT,
+                        _ => 0,
+                    } =>
+        {
+            Part::InputFile {
+                file_data: STANDARD.encode(bytes),
             }
         }
         _ => return Err(Failure::new("requestLimit")),

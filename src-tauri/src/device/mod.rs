@@ -67,7 +67,7 @@ pub enum DeviceError {
     ResourceChanged,
     LimitExceeded,
     DecodeFailed,
-    PdfDeferred,
+    PdfEncrypted,
 }
 
 #[derive(Clone, Debug, Serialize)]

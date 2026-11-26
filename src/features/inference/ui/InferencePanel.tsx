@@ -52,12 +52,17 @@ function usd(nanodollars: number): string {
 export function InferencePanel({
   provider,
   credentials,
+  visible,
 }: {
   provider: InferenceProvider;
   credentials: CredentialSettings;
+  visible: boolean;
 }) {
   const [session] = useState(() => createInferenceSession(provider));
   const keyField = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!visible && keyField.current) keyField.current.value = "";
+  }, [visible]);
   const [status, setStatus] = useState<CredentialStatus>();
   const [busy, setBusy] = useState<"credential" | "inference" | undefined>(
     "credential",
@@ -154,8 +159,8 @@ export function InferencePanel({
     usage.estimatedNanodollars >= ESTIMATED_SESSION_LIMIT;
   const metrics = outcome?.metrics;
   return (
-    <section aria-label="Muse Ember diagnostics">
-      <h2>Muse Ember diagnostics</h2>
+    <section aria-label="Meta provider">
+      <h2>Meta provider</h2>
       <p>
         {status?.source === "environment"
           ? "Using the development environment credential. It takes precedence over stored credentials."
@@ -164,8 +169,6 @@ export function InferencePanel({
             : status?.source === "missing"
               ? "No API key stored."
               : "API key status unknown."}
-        {status &&
-          ` ${status.remainingDispatches} diagnostic attempts remaining.`}
       </p>
       {status?.source !== "environment" && (
         <>
@@ -193,109 +196,116 @@ export function InferencePanel({
       <button disabled={Boolean(busy)} onClick={() => update("status")}>
         Refresh key status
       </button>
-      <p>
-        Each request sends one bundled example to Meta using your project
-        credits.
-      </p>
-      <details>
-        <summary>Synthetic examples</summary>
-        <p>{diagnosticText}</p>
-        <p>
-          The image is a 64 × 64 illustration of an orange circle on a blue
-          background.
-        </p>
-      </details>
-      <button disabled={disabled} onClick={() => run("text")}>
-        Send text to Meta
-      </button>
-      <button disabled={disabled} onClick={() => run("image")}>
-        Send image to Meta
-      </button>
-      <button disabled={busy !== "inference"} onClick={() => session.cancel()}>
-        Cancel inference
-      </button>
       <p role="status">
         {busy === "inference" ? "Waiting for Muse Ember…" : message}
       </p>
-      {outcome?.ok && (
-        <dl>
-          <dt>Summary</dt>
-          <dd>{outcome.value.summary}</dd>
-          <dt>Category</dt>
-          <dd>{outcome.value.category}</dd>
-          <dt>Tags</dt>
-          <dd>{outcome.value.tags.join(", ") || "None"}</dd>
-          <dt>Uncertainty</dt>
-          <dd>{outcome.value.uncertainty.join(" ") || "None reported"}</dd>
-        </dl>
-      )}
-      {metrics && (
-        <dl>
-          <dt>Model</dt>
-          <dd>{metrics.model}</dd>
-          <dt>Elapsed</dt>
-          <dd>{metrics.elapsedMs} ms</dd>
-          <dt>Input / output tokens</dt>
-          <dd>
-            {metrics.usage
-              ? `${metrics.usage.inputTokens} / ${metrics.usage.outputTokens}`
-              : "Unknown"}
-          </dd>
-          {metrics.usage && (
-            <>
-              <dt>Cached input / reasoning tokens</dt>
-              <dd>
-                {metrics.usage.cachedInputTokens ?? "Unknown"} /{" "}
-                {metrics.usage.reasoningTokens ?? "Unknown"}
-              </dd>
-            </>
-          )}
-          <dt>Estimated request cost</dt>
-          <dd>
-            {metrics.cost
-              ? `${usd(metrics.cost.nanodollars)}${metrics.cost.upperEstimate ? " (upper estimate)" : ""}`
-              : "Unknown"}
-          </dd>
-        </dl>
-      )}
-      {metrics?.diagnostics && (
+      <details>
+        <summary>Developer diagnostics</summary>
+        {status && <p>{status.remainingDispatches} dispatches remaining.</p>}
+        <p>
+          Each request sends one bundled example to Meta using your project
+          credits.
+        </p>
         <details>
-          <summary>Request diagnostics</summary>
+          <summary>Synthetic examples</summary>
+          <p>{diagnosticText}</p>
+          <p>
+            The image is a 64 × 64 illustration of an orange circle on a blue
+            background.
+          </p>
+        </details>
+        <button disabled={disabled} onClick={() => run("text")}>
+          Send text to Meta
+        </button>
+        <button disabled={disabled} onClick={() => run("image")}>
+          Send image to Meta
+        </button>
+        <button
+          disabled={busy !== "inference"}
+          onClick={() => session.cancel()}
+        >
+          Cancel inference
+        </button>
+        {outcome?.ok && (
           <dl>
-            {outcome && !outcome.ok && (
+            <dt>Summary</dt>
+            <dd>{outcome.value.summary}</dd>
+            <dt>Category</dt>
+            <dd>{outcome.value.category}</dd>
+            <dt>Tags</dt>
+            <dd>{outcome.value.tags.join(", ") || "None"}</dd>
+            <dt>Uncertainty</dt>
+            <dd>{outcome.value.uncertainty.join(" ") || "None reported"}</dd>
+          </dl>
+        )}
+        {metrics && (
+          <dl>
+            <dt>Model</dt>
+            <dd>{metrics.model}</dd>
+            <dt>Elapsed</dt>
+            <dd>{metrics.elapsedMs} ms</dd>
+            <dt>Input / output tokens</dt>
+            <dd>
+              {metrics.usage
+                ? `${metrics.usage.inputTokens} / ${metrics.usage.outputTokens}`
+                : "Unknown"}
+            </dd>
+            {metrics.usage && (
               <>
-                <dt>Error category</dt>
-                <dd>{outcome.error.code}</dd>
+                <dt>Cached input / reasoning tokens</dt>
+                <dd>
+                  {metrics.usage.cachedInputTokens ?? "Unknown"} /{" "}
+                  {metrics.usage.reasoningTokens ?? "Unknown"}
+                </dd>
               </>
             )}
-            {Object.entries(metrics.diagnostics)
-              .filter(([, value]) => value !== undefined)
-              .map(([label, value]) => (
-                <div key={label}>
-                  <dt>
-                    {label.replace(
-                      /[A-Z]/g,
-                      (char) => ` ${char.toLowerCase()}`,
-                    )}
-                  </dt>
-                  <dd>{value}</dd>
-                </div>
-              ))}
+            <dt>Estimated request cost</dt>
+            <dd>
+              {metrics.cost
+                ? `${usd(metrics.cost.nanodollars)}${metrics.cost.upperEstimate ? " (upper estimate)" : ""}`
+                : "Unknown"}
+            </dd>
           </dl>
-        </details>
-      )}
-      <p>
-        Session estimate for priced responses:{" "}
-        {usage.pricedResponses ? usd(usage.estimatedNanodollars) : "Unknown"}
-        {usage.includesUpperEstimate ? " (includes upper estimates)" : ""}.
-        Unreconciled attempts: {usage.unreconciledAttempts}.
-      </p>
-      {usage.usageResponses > 0 && (
+        )}
+        {metrics?.diagnostics && (
+          <details>
+            <summary>Request diagnostics</summary>
+            <dl>
+              {outcome && !outcome.ok && (
+                <>
+                  <dt>Error category</dt>
+                  <dd>{outcome.error.code}</dd>
+                </>
+              )}
+              {Object.entries(metrics.diagnostics)
+                .filter(([, value]) => value !== undefined)
+                .map(([label, value]) => (
+                  <div key={label}>
+                    <dt>
+                      {label.replace(
+                        /[A-Z]/g,
+                        (char) => ` ${char.toLowerCase()}`,
+                      )}
+                    </dt>
+                    <dd>{value}</dd>
+                  </div>
+                ))}
+            </dl>
+          </details>
+        )}
         <p>
-          Reported session tokens: {usage.inputTokens} input /{" "}
-          {usage.outputTokens} output.
+          Session estimate for priced responses:{" "}
+          {usage.pricedResponses ? usd(usage.estimatedNanodollars) : "Unknown"}
+          {usage.includesUpperEstimate ? " (includes upper estimates)" : ""}.
+          Unreconciled attempts: {usage.unreconciledAttempts}.
         </p>
-      )}
+        {usage.usageResponses > 0 && (
+          <p>
+            Reported session tokens: {usage.inputTokens} input /{" "}
+            {usage.outputTokens} output.
+          </p>
+        )}
+      </details>
     </section>
   );
 }

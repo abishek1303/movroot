@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Movroot desktop browser smoke test</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      const memory = new Map();
+      Object.defineProperty(window, "localStorage", {
+        value: {
+          getItem: (key) => memory.get(key) ?? null,
+          setItem: (key, value) => memory.set(key, value),
+        },
+      });
+      const calls = [];
+      const pending = {};
+      const file = {
+        fileId: "file-test",
+        displayName: "leaf.txt",
+        extension: "txt",
+      };
+      const extras = Array.from({ length: 70 }, (_, i) => ({
+        fileId: "extra-" + i,
+        displayName: "other-" + i + ".txt",
+      }));
+      const result = {
+        presentation: "document",
+        semanticType: "letter",
+        summary: "A letter",
+        observations: [],
+        topic: null,
+        likelyPurpose: null,
+        tags: [],
+        entities: [],
+        suggestedStem: null,
+        sensitivity: [],
+        uncertainty: [],
+      };
+      let allow = false;
+      const hold = (name) =>
+        new Promise((resolve) => {
+          pending[name] = resolve;
+        });
+      window.__TAURI_INTERNALS__ = {
+        invoke: async (command) => {
+          calls.push(command);
+          switch (command) {
+            case "select_device_scope":
+              return {
+                status: "selected",
+                scope: {
+                  scopeId: "fixture-scope",
+                  label: "Fixture",
+                  capabilities: ["discover", "read"],
+                },
+              };
+            case "discover_device_files":
+              return hold("scan");
+            case "muse_ember_key_status":
+              return {
+                sessionId: "c7b199e7-e40b-4159-b13d-b10979ad60cf",
+                source: "environment",
+                remainingDispatches: 20,
+              };
+            case "prepare_file_analysis":
+              return hold("check");
+            case "approve_file_analysis":
+              return allow;
+            case "cancel_device_operation":
+            case "cancel_muse_ember_inference":
+            case "discard_file_analysis":
+              return undefined;
+            case "infer_muse_ember_file":
+              return hold("infer");
+            default:
+              throw new Error(command);
+          }
+        },
+      };
+      const manifest = {
+        planId: "e2369bca-afe4-4e50-835c-efdeb4c87848",
+        items: [
+          {
+            fileId: file.fileId,
+            name: file.displayName,
+            extension: file.extension,
+            status: "ready",
+            format: "text",
+            coverage: {
+              kind: "text",
+              sourceBytes: 10,
+              coveredBytes: 10,
+              transmittedBytes: 10,
+              bomRemoved: false,
+              lineEndingsNormalized: false,
+            },
+          },
+        ],
+      };
+      const wait = async (check) => {
+        for (let i = 0; i < 100; i++) {
+          if (check()) return;
+          await new Promise((resolve) => setTimeout(resolve, 15));
+        }
+        throw new Error("Timed out");
+      };
+      const click = (label) => {
+        const button = [...document.querySelectorAll("button")].find(
+          (b) =>
+            !b.disabled &&
+            !b.closest("[hidden]") &&
+            b.textContent.trim() === label,
+        );
+        if (!button) throw new Error("Missing " + label);
+        button.click();
+      };
+      const visible = (text) =>
+        document.querySelector("#root").innerText.includes(text);
+      const requireState = (ok, message) => {
+        if (!ok) throw new Error(message);
+      };
+      const flip = async () => {
+        click("History");
+        await wait(() => visible("No operations yet"));
+        click("Organize");
+      };
+      async function run() {
+        try {
+          await wait(() => visible("Choose folder"));
+          click("Choose folder");
+          await wait(() => pending.scan);
+          await wait(() => document.querySelector(".discovery-indicator"));
+          requireState(
+            !document.querySelector(".discovered-file"),
+            "Pending scan invented files",
+          );
+          click("History");
+          await wait(() => visible("No operations yet"));
+          await wait(
+            () => !document.querySelector(".discovery-indicator").style.opacity,
+          );
+          pending.scan({
+            status: "complete",
+            files: [],
+            examined: 0,
+            unavailable: 0,
+          });
+          click("Organize");
+          await wait(() => visible("No eligible files found"));
+          requireState(
+            !document.querySelector(".discovered-file"),
+            "Empty scan invented files",
+          );
+
+          delete pending.scan;
+          click("Refresh");
+          await wait(() => pending.scan);
+          click("Cancel scan");
+          await wait(
+            () => !document.querySelector(".discovery-indicator").style.opacity,
+          );
+          pending.scan({
+            status: "cancelled",
+            files: [],
+            examined: 0,
+            unavailable: 0,
+          });
+          await wait(() => visible("Discovery cancelled"));
+          requireState(
+            !document.querySelector(".discovered-file"),
+            "Cancelled scan invented files",
+          );
+
+          delete pending.scan;
+          click("Refresh");
+          await wait(() => pending.scan);
+          pending.scan({
+            status: "partial",
+            files: [file, ...extras],
+            examined: 72,
+            unavailable: 1,
+          });
+          await wait(() => visible("Files to analyze"));
+          requireState(
+            visible("Scan partial"),
+            "Partial scan outcome was lost",
+          );
+          requireState(
+            document.querySelectorAll(".discovered-file").length === 5,
+            "Discovery did not cap representative glyphs",
+          );
+          requireState(
+            !calls.includes("prepare_file_analysis"),
+            "Discovery started preparation",
+          );
+          document.querySelector("input[type=checkbox]").click();
+          click("Check selected files");
+          await wait(() => pending.check);
+          await flip();
+          pending.check(manifest);
+          await wait(() => visible("Start analysis"));
+          click("Start analysis");
+          await wait(() => visible("Transmission cancelled"));
+          requireState(
+            !calls.includes("infer_muse_ember_file"),
+            "Decline dispatched",
+          );
+          allow = true;
+          delete pending.check;
+          click("Check selected files");
+          await wait(() => pending.check);
+          pending.check(manifest);
+          await wait(() => visible("Start analysis"));
+          click("Start analysis");
+          await wait(() => pending.infer);
+          const activeGlyph = () =>
+            [...document.querySelectorAll("[data-motion-glyph]")].some(
+              (glyph) => Number(getComputedStyle(glyph).opacity) > 0,
+            );
+          await wait(activeGlyph);
+          click("Cancel");
+          await wait(() => !activeGlyph());
+          pending.infer({
+            dispatched: false,
+            reply: null,
+            error: { code: "cancelled" },
+          });
+          await wait(
+            () => visible("1 cancelled") && visible("Remaining work cancelled"),
+          );
+          requireState(
+            calls.includes("cancel_muse_ember_inference"),
+            "Cancellation did not reach native transport",
+          );
+
+          delete pending.infer;
+          delete pending.check;
+          const second = {
+            ...manifest.items[0],
+            fileId: extras[0].fileId,
+            name: extras[0].displayName,
+          };
+          document.querySelectorAll(".file-selection input")[1].click();
+          await wait(() => visible("2 selected"));
+          click("Check selected files");
+          await wait(() => pending.check);
+          pending.check({ ...manifest, items: [...manifest.items, second] });
+          await wait(() => visible("Start analysis"));
+          click("Start analysis");
+          await wait(() => pending.infer);
+          await wait(activeGlyph);
+          pending.infer({
+            dispatched: true,
+            error: null,
+            reply: {
+              httpStatus: 200,
+              body: JSON.stringify({
+                model: "muse-ember-1.0",
+                status: "completed",
+                usage: { input_tokens: 200, output_tokens: 40 },
+                output: [
+                  {
+                    type: "message",
+                    role: "assistant",
+                    content: [
+                      { type: "output_text", text: JSON.stringify(result) },
+                    ],
+                  },
+                ],
+              }),
+            },
+          });
+          const firstResponse = pending.infer;
+          await wait(() => pending.infer !== firstResponse);
+          await wait(() =>
+            document.querySelector('[data-motion-destination="Documents"]'),
+          );
+          if (new URLSearchParams(location.search).has("capture")) {
+            document.body.dataset.capture = "analysis";
+            await new Promise((resolve) => setTimeout(resolve, 900));
+            delete document.body.dataset.capture;
+          }
+          const cancelsBeforeNavigation = calls.filter((command) =>
+            command.startsWith("cancel_"),
+          ).length;
+          click("History");
+          await wait(() => visible("No operations yet"));
+          requireState(!activeGlyph(), "History left an animated glyph active");
+          click("Organize");
+          const change = (label, value) => {
+            const select = [
+              ...document.querySelectorAll(".appearance-fields label"),
+            ]
+              .find((el) => el.firstChild.textContent === label)
+              .querySelector("select");
+            select.value = value;
+            select.dispatchEvent(new Event("change", { bubbles: true }));
+          };
+          const escape = () =>
+            document.activeElement.dispatchEvent(
+              new KeyboardEvent("keydown", {
+                key: "Escape",
+                bubbles: true,
+                cancelable: true,
+              }),
+            );
+          document.querySelector('button[aria-label="Appearance"]').click();
+          await wait(() => document.activeElement.id === "appearance-panel");
+          const shell = document.querySelector(".app-shell");
+          const lum = (hex) => {
+            const values = hex
+              .trim()
+              .slice(1)
+              .match(/../g)
+              .map((n) => parseInt(n, 16) / 255)
+              .map((n) =>
+                n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4,
+              );
+            return 0.2126 * values[0] + 0.7152 * values[1] + 0.0722 * values[2];
+          };
+          const contrast = (a, b) =>
+            (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+          for (const mode of ["light", "dark"]) {
+            change("Appearance", mode);
+            await wait(() => shell.dataset.mode === mode);
+            for (const accent of [
+              "lavender",
+              "sage",
+              "ocean",
+              "amber",
+              "rose",
+              "graphite",
+            ]) {
+              change("Accent", accent);
+              await wait(() => shell.dataset.accent === accent);
+              const css = getComputedStyle(shell);
+              const paint = (key) => {
+                let color = css.getPropertyValue(key).trim();
+                if (color === "#fff") color = "#ffffff";
+                return lum(color);
+              };
+              requireState(
+                contrast(paint("--accent"), paint("--accent-ink")) >= 4.5,
+                "Accent text contrast " + mode + accent,
+              );
+              requireState(
+                contrast(paint("--focus"), paint("--field")) >= 3,
+                "Focus contrast " + mode + accent,
+              );
+              requireState(
+                contrast(paint("--text"), paint("--accent-surface")) >= 4.5,
+                "Selected text contrast " + mode + accent,
+              );
+              requireState(
+                contrast(paint("--status-error"), paint("--canvas")) >= 4.5,
+                "Status contrast " + mode + accent,
+              );
+            }
+          }
+          change("Motion", "reduced");
+          await wait(
+            () =>
+              getComputedStyle(shell)
+                .getPropertyValue("--motion-scale")
+                .trim() === "0",
+          );
+          requireState(
+            JSON.parse(localStorage.getItem("movroot.appearance")).accent ===
+              "graphite",
+            "Preferences were not stored",
+          );
+          escape();
+          await wait(
+            () =>
+              document.activeElement.getAttribute("aria-label") ===
+              "Appearance",
+          );
+          document.querySelector('button[aria-label="Settings"]').click();
+          await wait(() => document.activeElement.id === "settings-panel");
+          requireState(
+            visible("Meta provider"),
+            "Settings did not reveal provider",
+          );
+          requireState(
+            !visible("Send text to Meta"),
+            "Diagnostics expanded by default",
+          );
+          escape();
+          await wait(
+            () =>
+              document.activeElement.getAttribute("aria-label") === "Settings",
+          );
+          requireState(
+            calls.filter((command) => command.startsWith("cancel_")).length ===
+              cancelsBeforeNavigation,
+            "Tab switch cancelled work",
+          );
+          requireState(!activeGlyph(), "Reduced motion started a file tween");
+          pending.infer({
+            dispatched: true,
+            reply: null,
+            error: { code: "invalidResponse" },
+          });
+          await wait(() => visible("2 of 2 processed") && visible("1 failed"));
+          requireState(
+            !activeGlyph(),
+            "Reduced motion animated a failed attempt",
+          );
+          requireState(
+            visible("Reserved $0.002912000") &&
+              !visible("Estimated session usage $0.000000000"),
+            "Visual state affected reported usage",
+          );
+          requireState(
+            document.querySelectorAll("[data-motion-glyph]").length === 8,
+            "Repeated runs grew the glyph pool",
+          );
+          document.querySelector('button[aria-label="Appearance"]').click();
+          await wait(() => document.activeElement.id === "appearance-panel");
+          change("Motion", "system");
+          await wait(() => shell.dataset.motion === "system");
+          escape();
+          click("Review changes");
+          const reviewPanel = () =>
+            document.querySelector(
+              '[data-flip-id="analysis-review"][tabindex]',
+            );
+          await wait(() => reviewPanel()?.style.transform);
+          await wait(() => !reviewPanel()?.style.transform);
+          await wait(() => visible("Documents"));
+          const region = document.querySelector(".review-scroll");
+          requireState(
+            region.scrollHeight > region.clientHeight,
+            "Long review did not scroll",
+          );
+          region.scrollTop = region.scrollHeight;
+          requireState(region.scrollTop > 0, "Tree scroll was blocked");
+          region.scrollTop = 0;
+          const folder = [...region.querySelectorAll("summary")].find(
+            (summary) => summary.textContent === "Documents",
+          );
+          folder.focus();
+          folder.click();
+          await wait(() => !folder.parentElement.open);
+          folder.click();
+          await wait(() => folder.parentElement.open);
+          const fileBox = region.querySelector(
+            'input[aria-label="Include leaf.txt in proposal"]',
+          );
+          fileBox.focus();
+          fileBox.click();
+          await wait(() => visible("Not included"));
+          requireState(
+            document.activeElement.getAttribute("aria-label") ===
+              "Include leaf.txt in proposal",
+            "Moved row lost keyboard focus",
+          );
+          click("leaf.txt");
+          await wait(() => document.querySelector(".review-inspector input"));
+
+          const rename = (value) => {
+            const input = document.querySelector(".review-inspector input");
+            Object.getOwnPropertyDescriptor(
+              HTMLInputElement.prototype,
+              "value",
+            ).set.call(input, value);
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+          };
+          rename("../invalid");
+          click("Update draft");
+          await wait(() => visible("Enter a valid filename"));
+          rename("renamed.txt");
+          click("Update draft");
+          await wait(() => visible("renamed.txt"));
+          region
+            .querySelector('input[aria-label="Include leaf.txt in proposal"]')
+            .click();
+          await wait(() =>
+            [...region.querySelectorAll("button")].some(
+              (b) => b.textContent === "renamed.txt",
+            ),
+          );
+          click("Current");
+          await wait(
+            () =>
+              !region.innerText.includes("Documents") && visible("leaf.txt"),
+          );
+          document.body.dataset.verification = "passed";
+          document.title = "PASS · Movroot desktop";
+        } catch (error) {
+          document.body.dataset.verification = error.stack;
+          document.title = "FAIL · " + error.message;
+        }
+      }
+      run();
+    </script>
+    <script type="module" src="../src/main.tsx"></script>
+  </body>
+</html>

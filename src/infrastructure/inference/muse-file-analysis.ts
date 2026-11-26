@@ -27,7 +27,7 @@ export function createMuseFileAnalysis(
   connection: ReturnType<typeof createMuseConnection>,
 ): FileAnalysisPort {
   return {
-    async prepare(scope, files, signal) {
+    async prepare(scope, files, signal, imageMode) {
       try {
         if (!connection.session()) await connection.credentials.status();
         const sessionId = connection.session();
@@ -37,7 +37,12 @@ export function createMuseFileAnalysis(
           signal,
           (request) =>
             invoke("prepare_file_analysis", {
-              request: { ...request, sessionId, fileIds: files },
+              request: {
+                ...request,
+                sessionId,
+                fileIds: files,
+                ...(imageMode === "original" && { imageMode }),
+              },
             }).then((raw) => manifestSchema.parse(raw)),
         );
         if (signal.aborted) {
@@ -83,22 +88,24 @@ export function createMuseFileAnalysis(
           }),
         );
         const dispatch = result.dispatched ? "dispatched" : "local";
-        if (result.error) return { dispatch, error: result.error };
+        const metrics = {
+          provider: "Meta Model API",
+          model: config.model,
+          elapsedMs: Math.round(performance.now() - start),
+          diagnostics: {
+            schemaVersion: config.name,
+            reasoningEffort: config.reasoning,
+            outputTokenLimit: config.maxOutputTokens,
+            httpStatus:
+              result.reply?.httpStatus ?? result.error?.httpStatus ?? undefined,
+          },
+        };
+        if (result.error) return { dispatch, error: result.error, metrics };
         if (!result.reply || !result.dispatched)
           return { dispatch: "ambiguous", error: { code: "invalidResponse" } };
         const parsed = interpretStructuredResponse(
           result.reply.body,
-          {
-            provider: "Meta Model API",
-            model: config.model,
-            elapsedMs: Math.round(performance.now() - start),
-            diagnostics: {
-              schemaVersion: config.name,
-              reasoningEffort: config.reasoning,
-              outputTokenLimit: config.maxOutputTokens,
-              httpStatus: result.reply.httpStatus,
-            },
-          },
+          metrics,
           semanticAnalysis,
         );
         return parsed.ok

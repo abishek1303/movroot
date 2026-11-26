@@ -1,0 +1,5 @@
+# Kestrel Demo Sprint
+Goal: release an offline field-guide prototype.
+- Completed: map legend and twelve specimen cards.
+- Blocker: accessibility review of map labels.
+- Next: validate offline navigation before the synthetic Friday demo.
